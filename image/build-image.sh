@@ -69,10 +69,13 @@ lock_canon() {
 
 warn_canon_lock() {
   local name="$1" lock="$2" found
+  if [[ ! -f "$lock" ]]; then
+    echo "${name} has no Cargo.lock, so its zns-canon commit is not pinned" >&2
+    exit 1
+  fi
   found="$(lock_canon "$lock")"
   if [[ "$found" != "$CANON_COMMIT" ]]; then
-    echo "TODO: ${name} Cargo.lock builds zns-canon ${found:-unknown}; versions.toml canon_commit is ${CANON_COMMIT}" >&2
-    note_incomplete "${name} Cargo.lock zns-canon pin differs from canon_commit"
+    echo "${name} Cargo.lock builds zns-canon ${found:-unknown}; versions.toml canon_commit is ${CANON_COMMIT}" >&2
     exit 1
   fi
 }

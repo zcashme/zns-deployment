@@ -1,21 +1,17 @@
 # Pinned inputs for the measured guest. Cargo.lock inside each pinned
 # commit is what `cargo build --locked` compiles.
-#
-# TODO: those lockfiles do not all use canon_commit.
-#   zns-mint and zns-migrate: e2d3ec477fc273e8e08add43252c362f0f8143fe
-#   zns-keygen:               d1a7a65580ed0f78db96ac8a42eecd4719b42e1a
 
 mint_repo = "https://github.com/zcashme/zns-mint.git"
-mint_commit = "d325d8caf3cd7716b80010951cf996f6cef038b5"
+mint_commit = "3f4b523b37b6264e7239099012c7c95813bd3637"
 
 keygen_repo = "https://github.com/zcashme/zns-keygen.git"
-keygen_commit = "4631a5b0b3463504cd2611f261e306a9a9550047"
+keygen_commit = "238af90e007359e03e2b0fd2646fe5934d11ea58"
 
 migrate_repo = "https://github.com/zcashme/zns-migrate.git"
-migrate_commit = "1e0db4597e130cd50d5f528367f5f4ed3f692248"
+migrate_commit = "1a68802480442fe4120831f22c69004fb186d6d1"
 
 canon_repo = "https://github.com/zcashme/zns-canon.git"
-canon_commit = "ab1dc80ff2a7bc574d43b123839ebfe560833041"
+canon_commit = "efbceb65a2035916cb3b5654d7c5c1a968d719a1"
 
 zebra_repo = "https://github.com/ZcashFoundation/zebra.git"
 zebra_commit = "f5c5277fe41eba9c74f37098738f93f35dd70d60"
