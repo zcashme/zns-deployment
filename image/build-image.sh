@@ -43,7 +43,8 @@ need() {
 }
 
 fetch_repo() {
-  local name="$1" url="$2" commit="$3" dest="$SRC/$name"
+  local name="$1" url="$2" commit="$3"
+  local dest="$SRC/$name"
   mkdir -p "$SRC"
   if [[ ! -d "$dest/.git" ]]; then
     git init "$dest"
@@ -72,6 +73,7 @@ warn_canon_lock() {
   if [[ "$found" != "$CANON_COMMIT" ]]; then
     echo "TODO: ${name} Cargo.lock builds zns-canon ${found:-unknown}; versions.toml canon_commit is ${CANON_COMMIT}" >&2
     note_incomplete "${name} Cargo.lock zns-canon pin differs from canon_commit"
+    exit 1
   fi
 }
 
@@ -147,6 +149,27 @@ MIGRATE_COMMIT="$(toml_get migrate_commit)"
 ZEBRA_COMMIT="$(toml_get zebra_commit)"
 ZEBRA_VERSION="$(toml_get zebra_version)"
 KERNEL_VERSION="$(toml_get kernel_version)"
+RUST_VERSION="$(toml_get rust_version)"
+# Fetched repos pin channel = "stable". Without this, rustup follows that
+# file and the compiler drifts off rust_version.
+export RUSTUP_TOOLCHAIN="$RUST_VERSION"
+need rustc
+rustc_version="$(rustc --version)"
+cargo_version="$(cargo --version)"
+case "$rustc_version" in
+  "rustc ${RUST_VERSION} "*) ;;
+  *)
+    echo "rustc is ${rustc_version}, versions.toml pins ${RUST_VERSION}" >&2
+    exit 1
+    ;;
+esac
+case "$cargo_version" in
+  "cargo ${RUST_VERSION} "*) ;;
+  *)
+    echo "cargo is ${cargo_version}, versions.toml pins ${RUST_VERSION}" >&2
+    exit 1
+    ;;
+esac
 
 fetch_repo zns-canon "$(toml_get canon_repo)" "$CANON_COMMIT"
 fetch_repo zns-mint "$(toml_get mint_repo)" "$MINT_COMMIT"
@@ -257,7 +280,7 @@ with gzip.GzipFile(filename="", mode="wb", fileobj=buf, mtime=0) as gz:
     gz.write(b"".join(chunks))
 blob = bytearray(buf.getvalue())
 blob[9] = 255
-out_path.write_bytes(blob
+out_path.write_bytes(blob)
 PY
 
 printf '%s\n' "${notes[@]}" >"$INCOMPLETE"

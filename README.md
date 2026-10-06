@@ -2,7 +2,7 @@
 
 Reproducible build of the ZNS SEV-SNP guest: the kernel, initramfs, and launch parameters whose bytes the TEE measures.
 
-`zns-mint`, `zns-keygen`, `zns-canon`, and `zns-migrate` stay in their own repos. `versions.toml` pins the commits this image builds. Chain databases, the seed capsule, and logs stay on the host as runtime state.
+`zns-mint`, `zns-keygen`, `zns-canon`, and `zns-migrate` stay in their own repos. `versions.toml` pins the commits this image builds and the Rust toolchain that compiles them. Chain databases, the seed capsule, and logs stay on the host as runtime state.
 
 ```text
 versions.toml

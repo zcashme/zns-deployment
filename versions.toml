@@ -21,6 +21,9 @@ zebra_repo = "https://github.com/ZcashFoundation/zebra.git"
 zebra_commit = "f5c5277fe41eba9c74f37098738f93f35dd70d60"
 zebra_version = "6.3.0"
 
+# Exact rustc and cargo for every build. zebrad at zebra_commit requires 1.91.
+rust_version = "1.91.0"
+
 kernel_version = "7.0.0-15-generic"
 # TODO: URL and hash of the linux-image package that supplies vmlinuz and modules.
 kernel_deb_sha256 = ""

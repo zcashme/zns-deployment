@@ -18,7 +18,9 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Install build packages
         run: |
@@ -27,8 +29,17 @@ jobs:
             build-essential ca-certificates cmake curl git \
             libssl-dev pkg-config protobuf-compiler python3
 
+      - name: Read Rust pin
+        id: rust
+        run: |
+          version="$(sed -n 's/^rust_version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' versions.toml | head -n 1)"
+          test -n "$version"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
+        with:
+          toolchain: ${{ steps.rust.outputs.version }}
 
       - name: Build guest image
         run: ./image/build-image.sh
@@ -86,6 +97,7 @@ jobs:
               "zebra_commit": pins.get("zebra_commit", ""),
               "zebra_version": pins.get("zebra_version", ""),
               "kernel_version": pins.get("kernel_version", ""),
+              "rust_version": pins.get("rust_version", ""),
               "artifacts": artifacts,
               "launch": {
                   "kernel": params["kernel"],
@@ -96,6 +108,9 @@ jobs:
                   "cpu": params["cpu"],
                   "vcpus": params["vcpus"],
                   "ovmf": params["ovmf"],
+                  "machine": params["machine"],
+                  "cbitpos": params["cbitpos"],
+                  "reduced_phys_bits": params["reduced_phys_bits"],
               },
               "tee_measurement": measurement,
           }
@@ -105,7 +120,7 @@ jobs:
           PY
 
       - name: Attest artifacts
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
           subject-path: |
             build/zns-initrd.img
@@ -115,7 +130,7 @@ jobs:
 
       - name: Upload release assets
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           files: |
             build/zns-initrd.img
