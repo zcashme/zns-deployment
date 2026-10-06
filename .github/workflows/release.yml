@@ -1,0 +1,124 @@
+# Build the measured guest and publish the bytes a verifier can recompute.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  release:
+    name: measured guest
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ca-certificates cmake curl git \
+            libssl-dev pkg-config protobuf-compiler python3
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build guest image
+        run: ./image/build-image.sh
+
+      - name: Hash artifacts
+        run: |
+          sha256sum build/zns-initrd.img build/bin/* | tee build/SHA256SUMS
+
+      - name: Compute expected SNP measurement
+        run: ./launch/qemu-snp.sh --measure
+
+      - name: Generate release manifest
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import pathlib
+          import subprocess
+
+          root = pathlib.Path(".")
+          pins = {}
+          for line in (root / "versions.toml").read_text().splitlines():
+              line = line.split("#", 1)[0].strip()
+              if not line or "=" not in line:
+                  continue
+              key, val = line.split("=", 1)
+              pins[key.strip()] = val.strip().strip('"')
+
+          artifacts = []
+          for path in sorted((root / "build" / "bin").iterdir()):
+              if path.is_file():
+                  digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                  artifacts.append({"name": path.name, "sha256": digest})
+          initrd = root / "build" / "zns-initrd.img"
+          artifacts.append(
+              {
+                  "name": "zns-initrd.img",
+                  "sha256": hashlib.sha256(initrd.read_bytes()).hexdigest(),
+              }
+          )
+
+          measurement = (root / "build" / "snp-measurement.txt").read_text().strip()
+          text = subprocess.check_output(["./launch/qemu-snp.sh", "--print"], text=True)
+          params = {}
+          for line in text.splitlines():
+              key, val = line.split("=", 1)
+              params[key] = val
+
+          manifest = {
+              "network": pins.get("network", ""),
+              "mint_commit": pins.get("mint_commit", ""),
+              "keygen_commit": pins.get("keygen_commit", ""),
+              "migrate_commit": pins.get("migrate_commit", ""),
+              "canon_commit": pins.get("canon_commit", ""),
+              "zebra_commit": pins.get("zebra_commit", ""),
+              "zebra_version": pins.get("zebra_version", ""),
+              "kernel_version": pins.get("kernel_version", ""),
+              "artifacts": artifacts,
+              "launch": {
+                  "kernel": params["kernel"],
+                  "initrd": params["initrd"],
+                  "cmdline": params["cmdline"],
+                  "guest_policy": params["guest_policy"],
+                  "kernel_hashes": params["kernel_hashes"],
+                  "cpu": params["cpu"],
+                  "vcpus": params["vcpus"],
+                  "ovmf": params["ovmf"],
+              },
+              "tee_measurement": measurement,
+          }
+          out = root / "build" / "release-manifest.json"
+          out.write_text(json.dumps(manifest, indent=2) + "\n")
+          print(out.read_text())
+          PY
+
+      - name: Attest artifacts
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            build/zns-initrd.img
+            build/release-manifest.json
+            build/SHA256SUMS
+            build/snp-measurement.txt
+
+      - name: Upload release assets
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            build/zns-initrd.img
+            build/release-manifest.json
+            build/SHA256SUMS
+            build/snp-measurement.txt
