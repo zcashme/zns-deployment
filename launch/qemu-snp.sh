@@ -156,8 +156,8 @@ measure() {
   check_ovmf
   check_kernel
 
-  # TODO: run the SNP measurement tool and write one hex line to
-  # build/snp-measurement.txt.
+  # TODO: run build/snp-measure-venv/bin/sev-snp-measure and write one hex
+  # line to build/snp-measurement.txt.
   echo "TODO: expected SNP measurement is not computed yet" >&2
   print_params >&2
   exit 1

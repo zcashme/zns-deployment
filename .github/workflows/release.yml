@@ -27,7 +27,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential ca-certificates cmake curl git \
-            libssl-dev pkg-config protobuf-compiler python3 zstd
+            libssl-dev pkg-config protobuf-compiler python3 python3-venv zstd
 
       - name: Read Rust pin
         id: rust
@@ -47,6 +47,9 @@ jobs:
       - name: Hash artifacts
         run: |
           sha256sum build/zns-initrd.img build/bin/* | tee build/SHA256SUMS
+
+      - name: Install SNP measurement tool
+        run: ./launch/install-snp-measure.sh
 
       - name: Compute expected SNP measurement
         run: ./launch/qemu-snp.sh --measure
