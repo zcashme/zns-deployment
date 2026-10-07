@@ -49,3 +49,8 @@ sapling_spend_bytes = "47958396"
 sapling_output_bytes = "3592860"
 sapling_spend_sha256 = "8e48ffd23abb3a5fd9c5589204f32d9c31285a04b78096ba40a79b75677efc13"
 sapling_output_sha256 = "2f0ebbcbb9bb0bcffe95a397e7eba89c29eb4dde6191c339db88570e3f3fb0e4"
+
+# Host tool that computes the expected SNP measurement. Not part of the guest.
+snp_measure_version = "0.0.13"
+snp_measure_url = "https://files.pythonhosted.org/packages/12/96/5b673738d1f973700369d9e80c1c32937d230acef721141e532891441213/sev_snp_measure-0.0.13-py3-none-any.whl"
+snp_measure_sha256 = "feda1aebe69dcbf38e9c636ed1d082bb7dc741fc6969f197d39faddb72b2762d"
