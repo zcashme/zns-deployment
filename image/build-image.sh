@@ -106,11 +106,10 @@ for name, expected_b2, expected_len, expected_sha in files:
     if got_b2 != expected_b2:
         raise SystemExit(f"{name}: blake2b-512 {got_b2} != {expected_b2}")
     got_sha = hashlib.sha256(data).hexdigest()
-    if expected_sha:
-        if got_sha != expected_sha:
-            raise SystemExit(f"{name}: sha256 {got_sha} != {expected_sha}")
-    else:
-        print(f"TODO: pin sapling sha256 for {name}: {got_sha}")
+    if not expected_sha:
+        raise SystemExit(f"{name}: sha256 is not pinned, got {got_sha}")
+    if got_sha != expected_sha:
+        raise SystemExit(f"{name}: sha256 {got_sha} != {expected_sha}")
 PY
 }
 
