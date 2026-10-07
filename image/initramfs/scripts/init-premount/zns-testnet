@@ -35,7 +35,7 @@ log() {
 
 fatal() {
   log "FATAL: $*"
-  if [ "$$" -eq 1 ]; then exec sh; fi
+  if [ "$$" -eq 1 ]; then reboot -f; fi
   exit 1
 }
 

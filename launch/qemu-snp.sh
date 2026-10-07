@@ -21,6 +21,7 @@ MACHINE="${MACHINE:-q35}"
 # AMD EPYC 8024P. CPUID family 25, model 160, stepping 2, signature 0xaa0f02.
 # QEMU has no named model for that CPUID. EPYC-Genoa is family 25, model 17, stepping 0.
 # -cpu host is what yields this signature on the testnet machine.
+# launch checks /proc/cpuinfo and exits unless it matches.
 # sev-snp-measure: --vcpu-family 25 --vcpu-model 160 --vcpu-stepping 2
 CPU="${CPU:-host}"
 CPU_FAMILY="${CPU_FAMILY:-25}"
@@ -66,6 +67,30 @@ ovmf_pin() {
   val="${val#\"}"
   val="${val%\"}"
   printf '%s' "$val"
+}
+
+cpuinfo_field() {
+  local key="$1" line val
+  line="$(grep -m1 -E "^${key}[[:space:]]*:" /proc/cpuinfo || true)"
+  val="${line#*:}"
+  val="${val#"${val%%[![:space:]]*}"}"
+  val="${val%"${val##*[![:space:]]}"}"
+  printf '%s' "$val"
+}
+
+check_cpu() {
+  local family model stepping
+  if [[ ! -r /proc/cpuinfo ]]; then
+    echo "CPU signature check needs /proc/cpuinfo" >&2
+    exit 1
+  fi
+  family="$(cpuinfo_field 'cpu family')"
+  model="$(cpuinfo_field 'model')"
+  stepping="$(cpuinfo_field 'stepping')"
+  if [[ "$family" != "$CPU_FAMILY" || "$model" != "$CPU_MODEL" || "$stepping" != "$CPU_STEPPING" ]]; then
+    echo "CPU signature ${family:-?}/${model:-?}/${stepping:-?} != ${CPU_FAMILY}/${CPU_MODEL}/${CPU_STEPPING}" >&2
+    exit 1
+  fi
 }
 
 check_ovmf() {
@@ -153,6 +178,7 @@ launch() {
     exit 1
   fi
   check_ovmf
+  check_cpu
 
   exec qemu-system-x86_64 \
     -enable-kvm \
