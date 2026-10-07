@@ -131,6 +131,10 @@ jobs:
         with:
           subject-path: |
             build/zns-initrd.img
+            build/bin/zebrad
+            build/bin/zns-keygen
+            build/bin/zns-migrate
+            build/bin/zns-mint
             build/release-manifest.json
             build/SHA256SUMS
             build/snp-measurement.txt
@@ -141,6 +145,10 @@ jobs:
         with:
           files: |
             build/zns-initrd.img
+            build/bin/zebrad
+            build/bin/zns-keygen
+            build/bin/zns-migrate
+            build/bin/zns-mint
             build/release-manifest.json
             build/SHA256SUMS
             build/snp-measurement.txt
