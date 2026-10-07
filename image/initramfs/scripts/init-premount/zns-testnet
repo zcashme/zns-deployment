@@ -1,0 +1,200 @@
+#!/bin/sh
+# Testnet guest init.
+#
+# Installed at /scripts/init-premount/zns-testnet and started from /init.
+# Mount and DHCP follow zns-keygen/deploy/testnet/guest-init.sh.
+# Zebra, the ceremony, and the mint follow the host script zns-guest-testnet-final.sh.
+set -eu
+
+PREREQ=""
+prereqs() {
+  echo "$PREREQ"
+}
+
+case "${1:-}" in
+prereqs)
+  prereqs
+  exit 0
+  ;;
+esac
+
+ZEBRA_CONFIG="/etc/zebra/zebrad.toml"
+ZEBRA_LOG="/tmp/zebra.log"
+MINT_LOG="/tmp/zns-mint.log"
+STATE_DIR="/state"
+PARAMS_DIR="/root/.zcash-params"
+
+# ext4 identities of the host volumes, so mount order does not matter.
+# zns-test-state.img -> /state
+# zebra-state.img    -> /var/lib/zebra
+# These strings are inside the measured initramfs.
+ZNS_UUID="0ece68d8-f963-4985-a751-84128c9ae1c4"
+ZEBRA_UUID="589fd35e-42f5-460c-aa84-7458ac3f11a0"
+
+log() {
+  echo "[zns-testnet] $*"
+}
+
+fatal() {
+  log "FATAL: $*"
+  if [ "$$" -eq 1 ]; then exec sh; fi
+  exit 1
+}
+
+export HOME=/root
+export ZCASH_PARAMS_DIR="$PARAMS_DIR"
+export PATH=/usr/local/bin:/sbin:/usr/sbin:/bin:/usr/bin
+
+mkdir -p /proc /sys /dev /run /var/lib/zebra /state /etc /tmp /root || fatal "could not create directories"
+
+mount -t proc proc /proc 2>/dev/null || true
+mount -t sysfs sysfs /sys 2>/dev/null || true
+mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+mount -t tmpfs tmpfs /run 2>/dev/null || true
+
+modprobe sev-guest 2>/dev/null || true
+
+if [ ! -e /dev/sev-guest ]; then
+  fatal "/dev/sev-guest is unavailable"
+fi
+
+log "resolving persistent volumes"
+ZNS_DEV="$(blkid -U "$ZNS_UUID" || true)"
+ZEBRA_DEV="$(blkid -U "$ZEBRA_UUID" || true)"
+
+if [ -z "$ZNS_DEV" ] || [ -z "$ZEBRA_DEV" ]; then
+  fatal "could not resolve persistent volume UUIDs"
+fi
+
+log "mounting ZNS state from $ZNS_DEV"
+mount "$ZNS_DEV" /state || fatal "could not mount ZNS state from $ZNS_DEV"
+
+log "mounting Zebra state from $ZEBRA_DEV"
+mount "$ZEBRA_DEV" /var/lib/zebra || fatal "could not mount Zebra state from $ZEBRA_DEV"
+
+ip link set lo up || fatal "could not bring up lo"
+
+NIC=""
+for iface in /sys/class/net/*; do
+  name="${iface##*/}"
+  if [ "$name" != "lo" ]; then
+    NIC="$name"
+    break
+  fi
+done
+
+if [ -z "$NIC" ]; then
+  fatal "no network interface found"
+fi
+
+log "using network interface $NIC"
+ip link set "$NIC" up || fatal "could not bring up $NIC"
+
+log "requesting DHCP lease"
+ipconfig -c dhcp -t 30 "$NIC" || fatal "DHCP failed on $NIC"
+
+NETCONF="/run/net-${NIC}.conf"
+if [ ! -f "$NETCONF" ]; then
+  fatal "DHCP succeeded but $NETCONF was not created"
+fi
+
+# shellcheck disable=SC1090
+. "$NETCONF" || fatal "could not read $NETCONF"
+
+log "guest IPv4: ${IPV4ADDR:-unknown}"
+log "gateway: ${IPV4GATEWAY:-unknown}"
+
+: > /etc/resolv.conf || fatal "could not write /etc/resolv.conf"
+for dns in "${IPV4DNS0:-}" "${IPV4DNS1:-}"; do
+  if [ -n "$dns" ] && [ "$dns" != "0.0.0.0" ]; then
+    echo "nameserver $dns" >> /etc/resolv.conf || fatal "could not write /etc/resolv.conf"
+  fi
+done
+
+if [ ! -s /etc/resolv.conf ]; then
+  fatal "DHCP supplied no usable DNS servers"
+fi
+
+if [ ! -f "$PARAMS_DIR/sapling-spend.params" ] || [ ! -f "$PARAMS_DIR/sapling-output.params" ]; then
+  fatal "Sapling params are missing from $PARAMS_DIR"
+fi
+
+if [ ! -f "$ZEBRA_CONFIG" ]; then
+  fatal "Zebra config not found at $ZEBRA_CONFIG"
+fi
+
+if ! grep -q 'indexer_listen_addr = "127.0.0.1:18230"' "$ZEBRA_CONFIG"; then
+  fatal "Zebra gRPC listener 127.0.0.1:18230 is not configured"
+fi
+
+if pidof zebrad >/dev/null 2>&1; then
+  log "Zebra is already running (pid $(pidof zebrad))"
+else
+  log "starting Zebra"
+  zebrad -c "$ZEBRA_CONFIG" start >"$ZEBRA_LOG" 2>&1 &
+fi
+
+log "waiting for Zebra readiness on http://127.0.0.1:8080/ready"
+
+until wget -q -O /dev/null http://127.0.0.1:8080/ready 2>/dev/null; do
+  if ! pidof zebrad >/dev/null 2>&1; then
+    tail -40 "$ZEBRA_LOG" 2>/dev/null || true
+    fatal "Zebra exited while waiting for readiness"
+  fi
+  sleep 5 || fatal "sleep failed"
+done
+
+log "Zebra is ready"
+
+if ! grep -qi ':4738' /proc/net/tcp /proc/net/tcp6 2>/dev/null; then
+  fatal "Zebra JSON-RPC 18232 is not listening"
+fi
+
+if ! grep -qi ':4736' /proc/net/tcp /proc/net/tcp6 2>/dev/null; then
+  fatal "Zebra gRPC 18230 is not listening"
+fi
+
+if [ -e "$STATE_DIR/keys/zns_seed.capsule" ]; then
+  log "Recreate zns-test-state.img on the host before running this script."
+  fatal "existing ceremony state found in $STATE_DIR/keys"
+fi
+
+cd "$STATE_DIR" || fatal "could not enter $STATE_DIR"
+
+log "starting fresh keygen ceremony"
+log "When the Treasury funding address appears, fund it externally."
+log "The script will remain here while zns-keygen waits for funding."
+
+zns-keygen || fatal "zns-keygen failed"
+
+log "ceremony completed successfully"
+
+if pidof zns-mint >/dev/null 2>&1; then
+  log "mint is already running (pid $(pidof zns-mint))"
+else
+  log "starting mint"
+  /usr/local/bin/zns-mint >"$MINT_LOG" 2>&1 &
+  MINT_PID=$!
+  log "mint started as pid $MINT_PID"
+fi
+
+sleep 2 || fatal "sleep failed"
+
+if ! pidof zns-mint >/dev/null 2>&1; then
+  tail -80 "$MINT_LOG" 2>/dev/null || true
+  fatal "mint exited during startup"
+fi
+
+log "mint is running"
+log "Zebra pid: $(pidof zebrad)"
+log "Mint pid:  $(pidof zns-mint)"
+log "Mint log:  $MINT_LOG"
+log "Zebra log: $ZEBRA_LOG"
+
+echo
+log "last 40 mint log lines:"
+tail -40 "$MINT_LOG" 2>/dev/null || true
+
+if [ "$$" -eq 1 ]; then
+  wait || fatal "a guest process exited"
+fi

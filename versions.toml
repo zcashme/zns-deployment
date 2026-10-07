@@ -1,0 +1,38 @@
+# Pinned inputs for the measured guest. Cargo.lock inside each pinned
+# commit is what `cargo build --locked` compiles.
+
+mint_repo = "https://github.com/zcashme/zns-mint.git"
+mint_commit = "3f4b523b37b6264e7239099012c7c95813bd3637"
+
+keygen_repo = "https://github.com/zcashme/zns-keygen.git"
+keygen_commit = "238af90e007359e03e2b0fd2646fe5934d11ea58"
+
+migrate_repo = "https://github.com/zcashme/zns-migrate.git"
+migrate_commit = "1a68802480442fe4120831f22c69004fb186d6d1"
+
+canon_repo = "https://github.com/zcashme/zns-canon.git"
+canon_commit = "efbceb65a2035916cb3b5654d7c5c1a968d719a1"
+
+zebra_repo = "https://github.com/ZcashFoundation/zebra.git"
+zebra_commit = "f5c5277fe41eba9c74f37098738f93f35dd70d60"
+zebra_version = "6.3.0"
+
+# Exact rustc and cargo for every build. zebrad at zebra_commit requires 1.91.
+rust_version = "1.91.0"
+
+kernel_version = "7.0.0-15-generic"
+# TODO: URL and hash of the linux-image package that supplies vmlinuz and modules.
+kernel_deb_sha256 = ""
+
+network = "testnet"
+
+sapling_spend_url = "https://download.z.cash/downloads/sapling-spend.params"
+sapling_output_url = "https://download.z.cash/downloads/sapling-output.params"
+# BLAKE2b-512 and sizes checked by zns-mint at boot (src/boot.rs).
+sapling_spend_blake2b512 = "8270785a1a0d0bc77196f000ee6d221c9c9894f55307bd9357c3f0105d31ca63991ab91324160d8f53e2bbd3c2633a6eb8bdf5205d822e7f3f73edac51b2b70c"
+sapling_output_blake2b512 = "657e3d38dbb5cb5e7dd2970e8b03d69b4787dd907285b5a7f0790dcc8072f60bf593b32cc2d1c030e00ff5ae64bf84c5c3beb84ddc841d48264b4a171744d028"
+sapling_spend_bytes = "47958396"
+sapling_output_bytes = "3592860"
+# TODO: fill from the SHA-256 build-image.sh prints after a verified download.
+sapling_spend_sha256 = ""
+sapling_output_sha256 = ""
