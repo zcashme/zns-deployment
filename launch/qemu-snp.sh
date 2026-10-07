@@ -17,6 +17,8 @@ OVMF="${OVMF:-$ROOT/build/OVMF.amdsev.fd}"
 # The testnet command omits policy=. QEMU's default is 0x30000.
 GUEST_POLICY="${GUEST_POLICY:-0x30000}"
 KERNEL_HASHES="${KERNEL_HASHES:-on}"
+# SNPActive. The launch command does not set debug-swap, so that bit stays clear.
+GUEST_FEATURES="${GUEST_FEATURES:-0x1}"
 MACHINE="${MACHINE:-q35}"
 # AMD EPYC 8024P. CPUID family 25, model 160, stepping 2, signature 0xaa0f02.
 # QEMU has no named model for that CPUID. EPYC-Genoa is family 25, model 17, stepping 0.
@@ -43,6 +45,7 @@ cmdline=${CMDLINE}
 ovmf=${OVMF}
 guest_policy=${GUEST_POLICY}
 kernel_hashes=${KERNEL_HASHES}
+guest_features=${GUEST_FEATURES}
 machine=${MACHINE}
 cpu=${CPU}
 cpu_family=${CPU_FAMILY}
@@ -135,6 +138,7 @@ measure() {
   require_measured cmdline "$CMDLINE"
   require_measured ovmf "$OVMF"
   require_measured guest_policy "$GUEST_POLICY"
+  require_measured guest_features "$GUEST_FEATURES"
   require_measured cpu "$CPU"
   require_measured cpu_family "$CPU_FAMILY"
   require_measured cpu_model "$CPU_MODEL"
@@ -156,11 +160,32 @@ measure() {
   check_ovmf
   check_kernel
 
-  # TODO: run build/snp-measure-venv/bin/sev-snp-measure and write one hex
-  # line to build/snp-measurement.txt.
-  echo "TODO: expected SNP measurement is not computed yet" >&2
-  print_params >&2
-  exit 1
+  local tool measurement out
+  tool="$ROOT/build/snp-measure-venv/bin/sev-snp-measure"
+  if [[ ! -x "$tool" ]]; then
+    echo "sev-snp-measure is not installed; run launch/install-snp-measure.sh" >&2
+    exit 1
+  fi
+  # Guest policy is reported beside this digest. The digest does not include it.
+  measurement="$("$tool" \
+    --mode snp \
+    --vmm-type QEMU \
+    --vcpus "$VCPUS" \
+    --vcpu-family "$CPU_FAMILY" \
+    --vcpu-model "$CPU_MODEL" \
+    --vcpu-stepping "$CPU_STEPPING" \
+    --guest-features "$GUEST_FEATURES" \
+    --ovmf "$OVMF" \
+    --kernel "$KERNEL" \
+    --initrd "$INITRD" \
+    --append "$CMDLINE")"
+  if [[ ! "$measurement" =~ ^[0-9a-f]{96}$ ]]; then
+    echo "sev-snp-measure returned ${measurement}" >&2
+    exit 1
+  fi
+  out="$ROOT/build/snp-measurement.txt"
+  printf '%s\n' "$measurement" >"$out"
+  printf '%s\n' "$measurement"
 }
 
 launch() {
@@ -169,6 +194,7 @@ launch() {
   require_measured cmdline "$CMDLINE"
   require_measured ovmf "$OVMF"
   require_measured guest_policy "$GUEST_POLICY"
+  require_measured guest_features "$GUEST_FEATURES"
   require_measured cpu "$CPU"
   require_measured cpu_family "$CPU_FAMILY"
   require_measured cpu_model "$CPU_MODEL"
