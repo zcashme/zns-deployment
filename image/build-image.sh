@@ -235,21 +235,17 @@ vmlinuz_out.write_bytes(data)
 
 modules_root = unpack(fetch(modules_rel, modules_sha, "linux-modules.deb"), "modules")
 moddir = stage / "usr/lib/modules" / version
-files = {
-    "kernel/drivers/virt/coco/guest/tsm_report.ko.zst": "",
-    "kernel/drivers/virt/coco/sev-guest/sev-guest.ko.zst":
-        "kernel/drivers/virt/coco/guest/tsm_report.ko.zst",
-}
-dep = []
-for rel, needs in files.items():
+# Inserted by the init script with kmod insmod, in this order.
+for rel in (
+    "kernel/drivers/virt/coco/guest/tsm_report.ko.zst",
+    "kernel/drivers/virt/coco/sev-guest/sev-guest.ko.zst",
+):
     src = modules_root / "usr/lib/modules" / version / rel
     if not src.is_file():
         raise SystemExit(f"modules package is missing {rel}")
     dest = moddir / rel
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(src.read_bytes())
-    dep.append(f"{rel}: {needs}".rstrip())
-(moddir / "modules.dep").write_text("\n".join(dep) + "\n")
 print(f"wrote {vmlinuz_out}")
 PY
 }
