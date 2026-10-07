@@ -2,7 +2,7 @@
 # SEV-SNP launch.
 #
 # Compute the expected measurement from these values:
-#   kernel, initrd, cmdline, guest policy, kernel-hashes, CPU, vCPU count, OVMF.
+#   kernel, initrd, cmdline, guest policy, kernel-hashes, CPU signature, vCPU count, OVMF.
 # The state disks are not part of that measurement.
 set -euo pipefail
 
@@ -18,7 +18,14 @@ OVMF="${OVMF:-$ROOT/build/OVMF.amdsev.fd}"
 GUEST_POLICY="${GUEST_POLICY:-0x30000}"
 KERNEL_HASHES="${KERNEL_HASHES:-on}"
 MACHINE="${MACHINE:-q35}"
+# AMD EPYC 8024P. CPUID family 25, model 160, stepping 2, signature 0xaa0f02.
+# QEMU has no named model for that CPUID. EPYC-Genoa is family 25, model 17, stepping 0.
+# -cpu host is what yields this signature on the testnet machine.
+# sev-snp-measure: --vcpu-family 25 --vcpu-model 160 --vcpu-stepping 2
 CPU="${CPU:-host}"
+CPU_FAMILY="${CPU_FAMILY:-25}"
+CPU_MODEL="${CPU_MODEL:-160}"
+CPU_STEPPING="${CPU_STEPPING:-2}"
 VCPUS="${VCPUS:-8}"
 MEM="${MEM:-8G}"
 CBITPOS="${CBITPOS:-51}"
@@ -37,6 +44,9 @@ guest_policy=${GUEST_POLICY}
 kernel_hashes=${KERNEL_HASHES}
 machine=${MACHINE}
 cpu=${CPU}
+cpu_family=${CPU_FAMILY}
+cpu_model=${CPU_MODEL}
+cpu_stepping=${CPU_STEPPING}
 vcpus=${VCPUS}
 mem=${MEM}
 cbitpos=${CBITPOS}
@@ -87,6 +97,9 @@ measure() {
   require_measured ovmf "$OVMF"
   require_measured guest_policy "$GUEST_POLICY"
   require_measured cpu "$CPU"
+  require_measured cpu_family "$CPU_FAMILY"
+  require_measured cpu_model "$CPU_MODEL"
+  require_measured cpu_stepping "$CPU_STEPPING"
   require_measured vcpus "$VCPUS"
   require_measured cbitpos "$CBITPOS"
   require_measured reduced_phys_bits "$REDUCED_PHYS_BITS"
@@ -117,6 +130,9 @@ launch() {
   require_measured ovmf "$OVMF"
   require_measured guest_policy "$GUEST_POLICY"
   require_measured cpu "$CPU"
+  require_measured cpu_family "$CPU_FAMILY"
+  require_measured cpu_model "$CPU_MODEL"
+  require_measured cpu_stepping "$CPU_STEPPING"
   require_measured vcpus "$VCPUS"
   require_measured mem "$MEM"
   require_measured cbitpos "$CBITPOS"
