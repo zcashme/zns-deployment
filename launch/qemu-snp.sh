@@ -58,9 +58,9 @@ EOF
 }
 
 MISSING=0
-ovmf_pin() {
-  local line val
-  line="$(grep -E '^ovmf_fd_sha256[[:space:]]*=' "$ROOT/versions.toml" | head -n 1 || true)"
+pin_value() {
+  local key="$1" line val
+  line="$(grep -E "^${key}[[:space:]]*=" "$ROOT/versions.toml" | head -n 1 || true)"
   val="${line#*=}"
   val="${val#"${val%%[![:space:]]*}"}"
   val="${val%"${val##*[![:space:]]}"}"
@@ -95,7 +95,7 @@ check_cpu() {
 
 check_ovmf() {
   local expected got
-  expected="$(ovmf_pin)"
+  expected="$(pin_value ovmf_fd_sha256)"
   if [[ -z "$expected" ]]; then
     echo "ovmf_fd_sha256 is empty" >&2
     exit 1
@@ -103,6 +103,20 @@ check_ovmf() {
   got="$(python3 -c 'import hashlib, pathlib, sys; print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())' "$OVMF")"
   if [[ "$got" != "$expected" ]]; then
     echo "OVMF sha256 ${got} != ${expected}" >&2
+    exit 1
+  fi
+}
+
+check_kernel() {
+  local expected got
+  expected="$(pin_value kernel_vmlinuz_sha256)"
+  if [[ -z "$expected" ]]; then
+    echo "kernel_vmlinuz_sha256 is empty" >&2
+    exit 1
+  fi
+  got="$(python3 -c 'import hashlib, pathlib, sys; print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())' "$KERNEL")"
+  if [[ "$got" != "$expected" ]]; then
+    echo "vmlinuz sha256 ${got} != ${expected}" >&2
     exit 1
   fi
 }
@@ -140,6 +154,7 @@ measure() {
     exit 1
   fi
   check_ovmf
+  check_kernel
 
   # TODO: run the SNP measurement tool and write one hex line to
   # build/snp-measurement.txt.
@@ -173,11 +188,12 @@ launch() {
     echo "set ZNS_STATE_IMG and ZEBRA_STATE_IMG to the host volume files" >&2
     exit 1
   fi
-  if [[ ! -f "$OVMF" ]]; then
-    echo "OVMF file must exist before launching" >&2
+  if [[ ! -f "$KERNEL" || ! -f "$OVMF" ]]; then
+    echo "kernel and OVMF files must exist before launching" >&2
     exit 1
   fi
   check_ovmf
+  check_kernel
   check_cpu
 
   exec qemu-system-x86_64 \

@@ -166,6 +166,90 @@ print(f"wrote {out_path}")
 PY
 }
 
+fetch_kernel() {
+  python3 - "$ROOT/image/install-guest.py" \
+    "$(toml_get guest_archive)" \
+    "$(toml_get kernel_image_deb)" \
+    "$(toml_get kernel_image_deb_sha256)" \
+    "$(toml_get kernel_vmlinuz_sha256)" \
+    "$(toml_get kernel_modules_deb)" \
+    "$(toml_get kernel_modules_deb_sha256)" \
+    "$KERNEL_VERSION" \
+    "$BUILD/kernel" \
+    "$BUILD/vmlinuz" \
+    "$STAGE" <<'PY'
+import hashlib
+import importlib.util
+import pathlib
+import shutil
+import sys
+import urllib.request
+
+(
+    installer,
+    archive,
+    image_rel,
+    image_sha,
+    vmlinuz_sha,
+    modules_rel,
+    modules_sha,
+    version,
+    work,
+    vmlinuz_out,
+    stage,
+) = sys.argv[1:]
+work = pathlib.Path(work)
+stage = pathlib.Path(stage)
+vmlinuz_out = pathlib.Path(vmlinuz_out)
+work.mkdir(parents=True, exist_ok=True)
+
+def fetch(rel, sha, name):
+    dest = work / name
+    url = archive.rstrip("/") + "/" + rel.lstrip("/")
+    cached = dest.is_file() and hashlib.sha256(dest.read_bytes()).hexdigest() == sha
+    if not cached:
+        urllib.request.urlretrieve(url, dest)
+    got = hashlib.sha256(dest.read_bytes()).hexdigest()
+    if got != sha:
+        raise SystemExit(f"{name} sha256 {got} != {sha}")
+    return dest
+
+spec = importlib.util.spec_from_file_location("install_guest", installer)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+def unpack(deb, name):
+    root = work / name
+    if root.exists():
+        shutil.rmtree(root)
+    mod.extract_deb(deb, root)
+    return root
+
+image_root = unpack(fetch(image_rel, image_sha, "linux-image.deb"), "image")
+member = image_root / "boot" / f"vmlinuz-{version}"
+data = member.read_bytes()
+got = hashlib.sha256(data).hexdigest()
+if got != vmlinuz_sha:
+    raise SystemExit(f"vmlinuz-{version} sha256 {got} != {vmlinuz_sha}")
+vmlinuz_out.write_bytes(data)
+
+modules_root = unpack(fetch(modules_rel, modules_sha, "linux-modules.deb"), "modules")
+moddir = stage / "usr/lib/modules" / version
+# Inserted by the init script with kmod insmod, in this order.
+for rel in (
+    "kernel/drivers/virt/coco/guest/tsm_report.ko.zst",
+    "kernel/drivers/virt/coco/sev-guest/sev-guest.ko.zst",
+):
+    src = modules_root / "usr/lib/modules" / version / rel
+    if not src.is_file():
+        raise SystemExit(f"modules package is missing {rel}")
+    dest = moddir / rel
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(src.read_bytes())
+print(f"wrote {vmlinuz_out}")
+PY
+}
+
 need git
 need cargo
 need curl
@@ -278,15 +362,7 @@ curl -fsSL -o "$params/sapling-output.params" "$(toml_get sapling_output_url)"
 verify_sapling "$params"
 
 fetch_ovmf
-
-kernel_sha="$(toml_get kernel_deb_sha256)"
-if [[ -z "$kernel_sha" ]]; then
-  echo "TODO: kernel_deb_sha256 is empty; not fetching linux-image-${KERNEL_VERSION}" >&2
-  note_incomplete "kernel package linux-image-${KERNEL_VERSION} and its modules"
-else
-  echo "TODO: kernel package URL is not pinned" >&2
-  note_incomplete "kernel package URL for linux-image-${KERNEL_VERSION}"
-fi
+fetch_kernel
 
 mkdir -p "$BUILD"
 python3 - "$STAGE" "$BUILD/zns-initrd.img" <<'PY'
@@ -342,7 +418,11 @@ blob[9] = 255
 out_path.write_bytes(blob)
 PY
 
-printf '%s\n' "${notes[@]}" >"$INCOMPLETE"
+if ((${#notes[@]})); then
+  printf '%s\n' "${notes[@]}" >"$INCOMPLETE"
+else
+  : >"$INCOMPLETE"
+fi
 echo "wrote ${BUILD}/zns-initrd.img"
 echo "open gaps:"
 cat "$INCOMPLETE"
