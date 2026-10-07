@@ -108,6 +108,7 @@ jobs:
                   "cmdline": params["cmdline"],
                   "guest_policy": params["guest_policy"],
                   "kernel_hashes": params["kernel_hashes"],
+                  "guest_features": params["guest_features"],
                   "cpu": params["cpu"],
                   "cpu_family": params["cpu_family"],
                   "cpu_model": params["cpu_model"],
