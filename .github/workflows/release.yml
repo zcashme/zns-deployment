@@ -1,4 +1,4 @@
-# Build the measured guest and publish the bytes a verifier can recompute.
+# Build the guest and publish the artifacts.
 name: Release
 
 on:
@@ -27,7 +27,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential ca-certificates cmake curl git \
-            libssl-dev pkg-config protobuf-compiler python3
+            libssl-dev pkg-config protobuf-compiler python3 zstd
 
       - name: Read Rust pin
         id: rust

@@ -1,9 +1,7 @@
 #!/bin/sh
-# Testnet guest init.
-#
-# Installed at /scripts/init-premount/zns-testnet and started from /init.
-# Mount and DHCP follow zns-keygen/deploy/testnet/guest-init.sh.
-# Zebra, the ceremony, and the mint follow the host script zns-guest-testnet-final.sh.
+# Testnet guest init. PID 1 via rdinit=/scripts/init-premount/zns-testnet.
+# Mount and DHCP match zns-keygen/deploy/testnet/guest-init.sh.
+# Zebra, keygen, and mint match zns-guest-testnet-final.sh.
 set -eu
 
 PREREQ=""
@@ -24,10 +22,10 @@ MINT_LOG="/tmp/zns-mint.log"
 STATE_DIR="/state"
 PARAMS_DIR="/root/.zcash-params"
 
-# ext4 identities of the host volumes, so mount order does not matter.
+# ext4 UUIDs of the host volumes, so mount order does not matter.
 # zns-test-state.img -> /state
 # zebra-state.img    -> /var/lib/zebra
-# These strings are inside the measured initramfs.
+# Changing these changes the initrd measurement.
 ZNS_UUID="0ece68d8-f963-4985-a751-84128c9ae1c4"
 ZEBRA_UUID="589fd35e-42f5-460c-aa84-7458ac3f11a0"
 

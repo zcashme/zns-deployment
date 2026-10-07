@@ -1,0 +1,17 @@
+# Ubuntu 26.04 (resolute) amd64 packages for the guest initrd.
+# busybox-initramfs 1:1.37.0-7ubuntu1 is the testnet BusyBox. It provides
+# sh, mkdir, mount, ip, grep, wget, pidof, tail, and sleep.
+# blkid, ipconfig, and kmod are separate programs.
+# libgcc-s1 and libstdc++6 are for the Rust binaries. The kernel package is not in this list.
+ce2e5af197a7e16931a32470beec9750e6f6c3cb1b1572c936aec0638a6503a2  pool/main/b/busybox/busybox-initramfs_1.37.0-7ubuntu1_amd64.deb
+2fb4d81c14fdf34251639ae82f5181f9f98480ea16125d535571ac1be9db3065  pool/main/g/gcc-16/libgcc-s1_16-20260322-1ubuntu1_amd64.deb
+a32b9ad585e39bdc7bd15d1eae6293461e6d466859a1dd2f7862d1e40f89b9d8  pool/main/g/gcc-16/libstdc++6_16-20260322-1ubuntu1_amd64.deb
+a613b457f3ff9c84ebd28af8a05afdec22605ad9aed87c71e3a6ae5170aeb9ca  pool/main/g/glibc/libc6_2.43-2ubuntu2.4_amd64.deb
+642657e87e56184a3d696f35019531ece1f7fd1b220c3df79776e7dba756cc16  pool/main/k/klibc/klibc-utils_2.0.14-1ubuntu2_amd64.deb
+a09471ffaac8fbd48194007a4400325a9e0ec69eabbdcc23916011b4060c777e  pool/main/k/klibc/libklibc_2.0.14-1ubuntu2_amd64.deb
+5595fb6bb2fba1dc53e005e17d24a389450296bdc5defb19dbcc0aa0ae33ae91  pool/main/k/kmod/kmod_34.2-2ubuntu2_amd64.deb
+34365d611ccf1f717f90a92fbe52ed96ae1829ab9be363c68a83563322797f8f  pool/main/libz/libzstd/libzstd1_1.5.7+dfsg-3_amd64.deb
+3ff73e121f6cd4f19e80ab4329dfd914108b3936c9db3708200203a9b245b34d  pool/main/o/openssl/libssl3t64_3.5.5-1ubuntu3.7_amd64.deb
+929ebedb610fa4dfa16cada763cea7e8ed4bd37c68573563410614189bd4e537  pool/main/u/util-linux/libblkid1_2.41.3-3ubuntu2.2_amd64.deb
+11fd410b1d3797b1e9127b68302160213c15e1553745fb6982e270b1e32d1f2a  pool/main/u/util-linux/util-linux_2.41.3-3ubuntu2.2_amd64.deb
+450d9322ac4e9baea0f9a74548a20fde73b078235c1f5d1fb7084c2638e33cdd  pool/main/z/zlib/zlib1g_1.3.dfsg+really1.3.1-1ubuntu3.1_amd64.deb

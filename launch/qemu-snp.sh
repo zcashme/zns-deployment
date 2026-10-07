@@ -1,29 +1,29 @@
 #!/usr/bin/env bash
-# Canonical SEV-SNP launch.
+# SEV-SNP launch.
 #
-# The expected measurement has to be computed from these same values:
+# Compute the expected measurement from these values:
 #   kernel, initrd, cmdline, guest policy, kernel-hashes, CPU, vCPU count, OVMF.
-# Host state disks are attached here and are not part of that measurement.
+# The state disks are not part of that measurement.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 KERNEL="${KERNEL:-$ROOT/build/vmlinuz}"
 INITRD="${INITRD:-$ROOT/build/zns-initrd.img}"
-# This string is part of the measurement.
-CMDLINE="${CMDLINE:-console=ttyS0}"
-OVMF="${OVMF:-TODO}"
-GUEST_POLICY="${GUEST_POLICY:-TODO}"
+# rdinit makes /scripts/init-premount/zns-testnet PID 1.
+CMDLINE="${CMDLINE:-console=ttyS0 rdinit=/scripts/init-premount/zns-testnet}"
+# build-image.sh writes this from ovmf_fd_sha256.
+OVMF="${OVMF:-$ROOT/build/OVMF.amdsev.fd}"
+# The testnet command omits policy=. QEMU's default is 0x30000.
+GUEST_POLICY="${GUEST_POLICY:-0x30000}"
 KERNEL_HASHES="${KERNEL_HASHES:-on}"
 MACHINE="${MACHINE:-q35}"
-# TODO: pin the production CPU, vCPU count, RAM, and SNP address bits.
-CPU="${CPU:-TODO}"
-VCPUS="${VCPUS:-TODO}"
-MEM="${MEM:-TODO}"
-CBITPOS="${CBITPOS:-TODO}"
-REDUCED_PHYS_BITS="${REDUCED_PHYS_BITS:-TODO}"
+CPU="${CPU:-host}"
+VCPUS="${VCPUS:-8}"
+MEM="${MEM:-8G}"
+CBITPOS="${CBITPOS:-51}"
+REDUCED_PHYS_BITS="${REDUCED_PHYS_BITS:-1}"
 
-# Runtime volumes. Recreating them does not change the measurement.
 ZNS_STATE_IMG="${ZNS_STATE_IMG:-}"
 ZEBRA_STATE_IMG="${ZEBRA_STATE_IMG:-}"
 
@@ -47,6 +47,31 @@ EOF
 }
 
 MISSING=0
+ovmf_pin() {
+  local line val
+  line="$(grep -E '^ovmf_fd_sha256[[:space:]]*=' "$ROOT/versions.toml" | head -n 1 || true)"
+  val="${line#*=}"
+  val="${val#"${val%%[![:space:]]*}"}"
+  val="${val%"${val##*[![:space:]]}"}"
+  val="${val#\"}"
+  val="${val%\"}"
+  printf '%s' "$val"
+}
+
+check_ovmf() {
+  local expected got
+  expected="$(ovmf_pin)"
+  if [[ -z "$expected" ]]; then
+    echo "ovmf_fd_sha256 is empty" >&2
+    exit 1
+  fi
+  got="$(python3 -c 'import hashlib, pathlib, sys; print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())' "$OVMF")"
+  if [[ "$got" != "$expected" ]]; then
+    echo "OVMF sha256 ${got} != ${expected}" >&2
+    exit 1
+  fi
+}
+
 require_measured() {
   local name="$1" value="$2"
   if [[ -z "$value" || "$value" == "TODO" ]]; then
@@ -76,10 +101,10 @@ measure() {
     echo "kernel, initrd, and OVMF files must exist before measuring" >&2
     exit 1
   fi
+  check_ovmf
 
-  # TODO: invoke the SNP measurement tool with the parameters printed below
-  # and write a single hex line to build/snp-measurement.txt.
-  # The QEMU launch in this file has to keep using those same values.
+  # TODO: run the SNP measurement tool and write one hex line to
+  # build/snp-measurement.txt.
   echo "TODO: expected SNP measurement is not computed yet" >&2
   print_params >&2
   exit 1
@@ -107,26 +132,29 @@ launch() {
     echo "set ZNS_STATE_IMG and ZEBRA_STATE_IMG to the host volume files" >&2
     exit 1
   fi
+  if [[ ! -f "$OVMF" ]]; then
+    echo "OVMF file must exist before launching" >&2
+    exit 1
+  fi
+  check_ovmf
 
   exec qemu-system-x86_64 \
     -enable-kvm \
+    -machine "${MACHINE},confidential-guest-support=sev0,vmport=off" \
     -cpu "$CPU" \
-    -machine "${MACHINE},confidential-guest-support=sev0,memory-backend=ram0" \
-    -object "memory-backend-memfd,id=ram0,size=${MEM},share=true" \
     -smp "$VCPUS" \
+    -m "$MEM" \
     -object "sev-snp-guest,id=sev0,cbitpos=${CBITPOS},reduced-phys-bits=${REDUCED_PHYS_BITS},policy=${GUEST_POLICY},kernel-hashes=${KERNEL_HASHES}" \
     -bios "$OVMF" \
     -kernel "$KERNEL" \
     -initrd "$INITRD" \
     -append "$CMDLINE" \
-    -nographic \
-    -serial mon:stdio \
+    -drive "file=${ZNS_STATE_IMG},if=virtio,format=raw" \
+    -drive "file=${ZEBRA_STATE_IMG},if=virtio,format=raw" \
     -netdev user,id=net0 \
     -device virtio-net-pci,netdev=net0 \
-    -drive "file=${ZNS_STATE_IMG},if=none,id=zns-state,format=raw" \
-    -device virtio-blk-pci,drive=zns-state \
-    -drive "file=${ZEBRA_STATE_IMG},if=none,id=zebra-state,format=raw" \
-    -device virtio-blk-pci,drive=zebra-state
+    -nographic \
+    -no-reboot
 }
 
 case "${1:-}" in

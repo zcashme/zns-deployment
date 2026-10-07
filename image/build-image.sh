@@ -4,7 +4,7 @@
 # Fetches the pinned repos, builds zns-mint, zns-keygen, zns-migrate, and
 # zebrad, checks the Sapling parameters, and packs build/zns-initrd.img.
 #
-# Chain databases, the seed capsule, and logs stay off this image.
+# Chain databases, the seed capsule, and logs are not in this image.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -123,10 +123,54 @@ build_bin() {
   )
 }
 
+fetch_ovmf() {
+  python3 - "$ROOT/image/install-guest.py" \
+    "$(toml_get guest_archive)" \
+    "$(toml_get ovmf_deb)" \
+    "$(toml_get ovmf_deb_sha256)" \
+    "$(toml_get ovmf_fd_sha256)" \
+    "$BUILD/ovmf/ovmf.deb" \
+    "$BUILD/OVMF.amdsev.fd" <<'PY'
+import hashlib
+import importlib.util
+import pathlib
+import shutil
+import sys
+import urllib.request
+
+installer, archive, deb_rel, deb_sha, fd_sha, deb_path, out_path = sys.argv[1:]
+deb_path = pathlib.Path(deb_path)
+out_path = pathlib.Path(out_path)
+deb_path.parent.mkdir(parents=True, exist_ok=True)
+url = archive.rstrip("/") + "/" + deb_rel.lstrip("/")
+cached = deb_path.is_file() and hashlib.sha256(deb_path.read_bytes()).hexdigest() == deb_sha
+if not cached:
+    urllib.request.urlretrieve(url, deb_path)
+got = hashlib.sha256(deb_path.read_bytes()).hexdigest()
+if got != deb_sha:
+    raise SystemExit(f"ovmf deb sha256 {got} != {deb_sha}")
+spec = importlib.util.spec_from_file_location("install_guest", installer)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+root = deb_path.parent / "root"
+if root.exists():
+    shutil.rmtree(root)
+mod.extract_deb(deb_path, root)
+member = root / "usr/share/ovmf/OVMF.amdsev.fd"
+data = member.read_bytes()
+got_fd = hashlib.sha256(data).hexdigest()
+if got_fd != fd_sha:
+    raise SystemExit(f"OVMF.amdsev.fd sha256 {got_fd} != {fd_sha}")
+out_path.write_bytes(data)
+print(f"wrote {out_path}")
+PY
+}
+
 need git
 need cargo
 need curl
 need python3
+need zstd
 need protoc
 need cmake
 
@@ -153,8 +197,8 @@ ZEBRA_COMMIT="$(toml_get zebra_commit)"
 ZEBRA_VERSION="$(toml_get zebra_version)"
 KERNEL_VERSION="$(toml_get kernel_version)"
 RUST_VERSION="$(toml_get rust_version)"
-# Fetched repos pin channel = "stable". Without this, rustup follows that
-# file and the compiler drifts off rust_version.
+# rust-toolchain.toml in the fetched repos sets channel = "stable".
+# RUSTUP_TOOLCHAIN keeps rustc at rust_version.
 export RUSTUP_TOOLCHAIN="$RUST_VERSION"
 need rustc
 rustc_version="$(rustc --version)"
@@ -209,6 +253,15 @@ install -m 0755 "$SRC/zns-keygen/target/release/zns-keygen" "$BIN/zns-keygen"
 install -m 0755 "$SRC/zns-migrate/target/release/zns-migrate" "$BIN/zns-migrate"
 install -m 0755 "$SRC/zebra/target/release/zebrad" "$BIN/zebrad"
 install -m 0755 "$BIN/zns-mint" "$BIN/zns-keygen" "$BIN/zns-migrate" "$BIN/zebrad" "$STAGE/usr/local/bin/"
+python3 "$ROOT/image/install-guest.py" \
+  --archive "$(toml_get guest_archive)" \
+  --debs "$ROOT/image/guest-debs.sha256" \
+  --work "$BUILD/guest" \
+  --stage "$STAGE" \
+  --bin "$STAGE/usr/local/bin/zns-mint" \
+  --bin "$STAGE/usr/local/bin/zns-keygen" \
+  --bin "$STAGE/usr/local/bin/zns-migrate" \
+  --bin "$STAGE/usr/local/bin/zebrad"
 install -m 0644 "$ROOT/image/configs/zebrad.toml" "$STAGE/etc/zebra/zebrad.toml"
 install -m 0755 "$ROOT/image/initramfs/scripts/init-premount/zns-testnet" \
   "$STAGE/scripts/init-premount/zns-testnet"
@@ -224,6 +277,8 @@ curl -fsSL -o "$params/sapling-spend.params" "$(toml_get sapling_spend_url)"
 curl -fsSL -o "$params/sapling-output.params" "$(toml_get sapling_output_url)"
 verify_sapling "$params"
 
+fetch_ovmf
+
 kernel_sha="$(toml_get kernel_deb_sha256)"
 if [[ -z "$kernel_sha" ]]; then
   echo "TODO: kernel_deb_sha256 is empty; not fetching linux-image-${KERNEL_VERSION}" >&2
@@ -233,13 +288,11 @@ else
   note_incomplete "kernel package URL for linux-image-${KERNEL_VERSION}"
 fi
 
-note_incomplete "guest userspace for the init script (blkid, ip, ipconfig, wget, pidof, modprobe)"
-note_incomplete "dynamic linker and shared libraries for the guest binaries"
-
 mkdir -p "$BUILD"
 python3 - "$STAGE" "$BUILD/zns-initrd.img" <<'PY'
 import gzip
 import io
+import os
 import pathlib
 import stat
 import sys
@@ -265,11 +318,14 @@ chunks = [emit(ino, ".", stat.S_IFDIR | 0o755, b"")]
 ino += 1
 for path in paths:
     rel = path.relative_to(stage).as_posix()
-    mode = path.stat().st_mode
-    if path.is_dir():
+    mode = path.lstat().st_mode
+    if path.is_symlink():
+        data = os.readlink(path).encode()
+        filemode = stat.S_IFLNK | 0o777
+    elif stat.S_ISDIR(mode):
         data = b""
         filemode = stat.S_IFDIR | 0o755
-    elif path.is_file():
+    elif stat.S_ISREG(mode):
         data = path.read_bytes()
         filemode = stat.S_IFREG | (0o755 if mode & 0o111 else 0o644)
     else:
