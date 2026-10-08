@@ -35,7 +35,12 @@ log() {
 
 fatal() {
   log "FATAL: $*"
-  if [ "$$" -eq 1 ]; then reboot -f; fi
+
+  if [ "$$" -eq 1 ]; then
+    log "dropping to emergency shell"
+    exec /bin/sh
+  fi
+
   exit 1
 }
 
@@ -52,8 +57,11 @@ mount -t tmpfs tmpfs /run 2>/dev/null || true
 
 # kmod modprobe reads modules.dep.bin, which this image does not ship.
 # sev-guest depends on tsm_report.
-kmod insmod /lib/modules/$(uname -r)/kernel/drivers/virt/coco/guest/tsm_report.ko.zst 2>/dev/null || true
-kmod insmod /lib/modules/$(uname -r)/kernel/drivers/virt/coco/sev-guest/sev-guest.ko.zst 2>/dev/null || true
+/usr/bin/insmod /lib/modules/$(uname -r)/kernel/drivers/virt/coco/guest/tsm_report.ko.zst ||
+  fatal "failed to load tsm_report"
+
+/usr/bin/insmod /lib/modules/$(uname -r)/kernel/drivers/virt/coco/sev-guest/sev-guest.ko.zst ||
+  fatal "failed to load sev-guest"
 
 if [ ! -e /dev/sev-guest ]; then
   fatal "/dev/sev-guest is unavailable"
