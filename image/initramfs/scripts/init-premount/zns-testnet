@@ -50,22 +50,25 @@ export PATH=/usr/local/bin:/sbin:/usr/sbin:/bin:/usr/bin
 
 mkdir -p /proc /sys /dev /run /var/lib/zebra /state /etc /tmp /root || fatal "could not create directories"
 
-mount -t proc proc /proc 2>/dev/null || true
-mount -t sysfs sysfs /sys 2>/dev/null || true
-mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
 mount -t tmpfs tmpfs /run 2>/dev/null || true
 
-# kmod modprobe reads modules.dep.bin, which this image does not ship.
-# sev-guest depends on tsm_report.
+/usr/bin/busybox mount -t devtmpfs devtmpfs /dev ||
+  fatal "failed to mount devtmpfs on /dev"
+
+/usr/bin/busybox mount -t proc proc /proc ||
+  fatal "failed to mount proc on /proc"
+
+/usr/bin/busybox mount -t sysfs sysfs /sys ||
+  fatal "failed to mount sysfs on /sys"
+
 /usr/bin/insmod /lib/modules/$(uname -r)/kernel/drivers/virt/coco/guest/tsm_report.ko.zst ||
   fatal "failed to load tsm_report"
 
 /usr/bin/insmod /lib/modules/$(uname -r)/kernel/drivers/virt/coco/sev-guest/sev-guest.ko.zst ||
   fatal "failed to load sev-guest"
 
-if [ ! -e /dev/sev-guest ]; then
+[ -e /dev/sev-guest ] ||
   fatal "/dev/sev-guest is unavailable"
-fi
 
 log "resolving persistent volumes"
 ZNS_DEV="$(blkid -U "$ZNS_UUID" || true)"
