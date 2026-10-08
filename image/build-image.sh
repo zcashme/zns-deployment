@@ -345,6 +345,7 @@ python3 "$ROOT/image/install-guest.py" \
   --bin "$STAGE/usr/local/bin/zns-keygen" \
   --bin "$STAGE/usr/local/bin/zns-migrate" \
   --bin "$STAGE/usr/local/bin/zebrad"
+ln -sf kmod "$STAGE/usr/bin/insmod"
 install -m 0644 "$ROOT/image/configs/zebrad.toml" "$STAGE/etc/zebra/zebrad.toml"
 install -m 0755 "$ROOT/image/initramfs/scripts/init-premount/zns-testnet" \
   "$STAGE/scripts/init-premount/zns-testnet"
