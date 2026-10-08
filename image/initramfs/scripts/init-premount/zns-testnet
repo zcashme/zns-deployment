@@ -71,12 +71,12 @@ mount -t tmpfs tmpfs /run 2>/dev/null || true
   fatal "/dev/sev-guest is unavailable"
 
 log "resolving persistent volumes"
-ZNS_DEV="$(blkid -U "$ZNS_UUID" || true)"
-ZEBRA_DEV="$(blkid -U "$ZEBRA_UUID" || true)"
 
-if [ -z "$ZNS_DEV" ] || [ -z "$ZEBRA_DEV" ]; then
-  fatal "could not resolve persistent volume UUIDs"
-fi
+ZNS_DEV=/dev/vda
+ZEBRA_DEV=/dev/vdb
+
+[ -b "$ZNS_DEV" ] || fatal "$ZNS_DEV is unavailable"
+[ -b "$ZEBRA_DEV" ] || fatal "$ZEBRA_DEV is unavailable"
 
 log "mounting ZNS state from $ZNS_DEV"
 mount "$ZNS_DEV" /state || fatal "could not mount ZNS state from $ZNS_DEV"
