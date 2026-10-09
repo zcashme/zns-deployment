@@ -6,6 +6,28 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      from_measurement:
+        description: Source guest measurement, 48 bytes hex
+        required: true
+        type: string
+      seed_fingerprint:
+        description: ZIP-32 seed fingerprint, 32 bytes hex
+        required: true
+        type: string
+      source_capsule_hash:
+        description: BLAKE2b-256 of the source capsule file, 32 bytes hex
+        required: true
+        type: string
+      sequence:
+        description: Upgrade sequence
+        required: false
+        default: "1"
+        type: string
+      from_guest_policy:
+        description: Source guest policy; defaults to this image's policy
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -21,6 +43,15 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+
+      - name: Check upgrade inputs
+        env:
+          UPGRADE_FROM_MEASUREMENT: ${{ github.event.inputs.from_measurement }}
+          UPGRADE_SEED_FINGERPRINT: ${{ github.event.inputs.seed_fingerprint }}
+          UPGRADE_SOURCE_CAPSULE_HASH: ${{ github.event.inputs.source_capsule_hash }}
+          UPGRADE_SEQUENCE: ${{ github.event.inputs.sequence }}
+          UPGRADE_FROM_GUEST_POLICY: ${{ github.event.inputs.from_guest_policy }}
+        run: python3 launch/pack-upgrade-document.py --check
 
       - name: Install build packages
         run: |
@@ -53,6 +84,15 @@ jobs:
 
       - name: Compute expected SNP measurement
         run: ./launch/qemu-snp.sh --measure
+
+      - name: Pack canonical upgrade document
+        env:
+          UPGRADE_FROM_MEASUREMENT: ${{ github.event.inputs.from_measurement }}
+          UPGRADE_SEED_FINGERPRINT: ${{ github.event.inputs.seed_fingerprint }}
+          UPGRADE_SOURCE_CAPSULE_HASH: ${{ github.event.inputs.source_capsule_hash }}
+          UPGRADE_SEQUENCE: ${{ github.event.inputs.sequence }}
+          UPGRADE_FROM_GUEST_POLICY: ${{ github.event.inputs.from_guest_policy }}
+        run: python3 launch/pack-upgrade-document.py
 
       - name: Generate release manifest
         run: |
@@ -138,6 +178,7 @@ jobs:
             build/release-manifest.json
             build/SHA256SUMS
             build/snp-measurement.txt
+            build/upgrade.bin
 
       - name: Upload release assets
         if: startsWith(github.ref, 'refs/tags/v')
@@ -152,3 +193,5 @@ jobs:
             build/release-manifest.json
             build/SHA256SUMS
             build/snp-measurement.txt
+            build/upgrade.bin
+            build/upgrade.toml
