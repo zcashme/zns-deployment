@@ -167,20 +167,19 @@ if ! grep -qi ':4736' /proc/net/tcp /proc/net/tcp6 2>/dev/null; then
   fatal "Zebra gRPC 18230 is not listening"
 fi
 
-if [ -e "$STATE_DIR/keys/zns_seed.capsule" ]; then
-  log "Recreate zns-test-state.img on the host before running this script."
-  fatal "existing ceremony state found in $STATE_DIR/keys"
-fi
-
 cd "$STATE_DIR" || fatal "could not enter $STATE_DIR"
 
-log "starting fresh keygen ceremony"
-log "When the Treasury funding address appears, fund it externally."
-log "The script will remain here while zns-keygen waits for funding."
+if [ -e "$STATE_DIR/keys/zns_seed.capsule" ]; then
+  log "ceremony capsule present, skipping keygen"
+else
+  log "starting fresh keygen ceremony"
+  log "When the Treasury funding address appears, fund it externally."
+  log "The script will remain here while zns-keygen waits for funding."
 
-zns-keygen || fatal "zns-keygen failed"
+  zns-keygen || fatal "zns-keygen failed"
 
-log "ceremony completed successfully"
+  log "ceremony completed successfully"
+fi
 
 if pidof zns-mint >/dev/null 2>&1; then
   log "mint is already running (pid $(pidof zns-mint))"
