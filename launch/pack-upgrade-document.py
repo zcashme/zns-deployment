@@ -149,12 +149,14 @@ def toml_text(source, to_measurement, from_guest_policy, to_guest_policy, artifa
 
 def main():
     source = load_source()
-    if "--check" in sys.argv[1:]:
-        return
+    if source["from_guest_policy"]:
+        policy(source["from_guest_policy"])
     release_name = os.environ.get("GITHUB_REF_NAME", "").strip()
     if not release_name:
         fail("GITHUB_REF_NAME is empty; this step runs on a v* tag")
     release = release_tag(release_name)
+    if "--check" in sys.argv[1:]:
+        return
     measurement_path = BUILD / "snp-measurement.txt"
     initrd_path = BUILD / "zns-initrd.img"
     if not measurement_path.is_file() or not initrd_path.is_file():
