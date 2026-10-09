@@ -153,6 +153,7 @@ until wget -q -O /dev/null http://127.0.0.1:8080/ready 2>/dev/null; do
     tail -40 "$ZEBRA_LOG" 2>/dev/null || true
     fatal "Zebra exited while waiting for readiness"
   fi
+  tail -20 "$ZEBRA_LOG" 2>/dev/null || true
   sleep 5 || fatal "sleep failed"
 done
 
