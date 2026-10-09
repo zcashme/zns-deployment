@@ -182,7 +182,8 @@ else
 fi
 
 if pidof zns-mint >/dev/null 2>&1; then
-  log "mint is already running (pid $(pidof zns-mint))"
+  MINT_PID=$(pidof zns-mint)
+  log "mint is already running (pid $MINT_PID)"
 else
   log "starting mint"
   /usr/local/bin/zns-mint >"$MINT_LOG" 2>&1 &
@@ -193,8 +194,9 @@ fi
 sleep 2 || fatal "sleep failed"
 
 if ! pidof zns-mint >/dev/null 2>&1; then
+  wait "$MINT_PID" || status=$?
   tail -80 "$MINT_LOG" 2>/dev/null || true
-  fatal "mint exited during startup"
+  fatal "mint exited with status ${status:-0}"
 fi
 
 log "mint is running"
@@ -208,5 +210,7 @@ log "last 40 mint log lines:"
 tail -40 "$MINT_LOG" 2>/dev/null || true
 
 if [ "$$" -eq 1 ]; then
-  wait || fatal "a guest process exited"
+  wait "$MINT_PID" || status=$?
+  tail -80 "$MINT_LOG" 2>/dev/null || true
+  fatal "mint exited with status ${status:-0}"
 fi
