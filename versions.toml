@@ -14,8 +14,8 @@ canon_repo = "https://github.com/zcashme/zns-canon.git"
 canon_commit = "09e0ad08f816b064a3ee685dbbd716eb1dfcfff5"
 
 zebra_repo = "https://github.com/ZcashFoundation/zebra.git"
-zebra_commit = "f5c5277fe41eba9c74f37098738f93f35dd70d60"
-zebra_version = "6.3.0"
+zebra_commit = "6d1e414d6f55e4180d0e47baaa934bf97d5b4fec"
+zebra_version = "7.0.0-rc.0"
 
 # zebrad at zebra_commit requires Rust 1.91.
 rust_version = "1.91.0"
