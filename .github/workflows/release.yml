@@ -36,7 +36,10 @@ permissions:
 jobs:
   release:
     name: measured guest
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-16core
+    env:
+      SCCACHE_GHA_ENABLED: "on"
+      RUSTC_WRAPPER: sccache
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -71,8 +74,23 @@ jobs:
         with:
           toolchain: ${{ steps.rust.outputs.version }}
 
+      - name: Run sccache-cache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+
+      - name: Cache guest downloads
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            build/kernel
+            build/ovmf
+          key: guest-downloads-${{ hashFiles('versions.toml') }}
+
       - name: Build guest image
         run: ./image/build-image.sh
+
+      - name: sccache stats
+        if: always()
+        run: ${SCCACHE_PATH} --show-stats
 
       - name: Hash artifacts
         run: |
