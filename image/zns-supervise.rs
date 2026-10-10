@@ -5,7 +5,7 @@
 //! Built with the pinned rustc from versions.toml. No host C compiler.
 
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
@@ -14,6 +14,17 @@ use std::time::Duration;
 
 const CHECK_INTERVAL: u64 = 30;
 const FAIL_LIMIT: i32 = 3;
+const LOG_MAX: u64 = 64 * 1024 * 1024;
+const LOG_KEEP: u64 = 8 * 1024 * 1024;
+const MINT_LOG: &str = "/state/log/mint.log";
+const MINT_LOG_MAX: u64 = 1024 * 1024 * 1024;
+const MINT_LOG_KEEP: u64 = MINT_LOG_MAX - LOG_MAX;
+const LOGS: &[&str] = &[
+    "/state/log/zebra.log",
+    "/state/log/metrics.log",
+    "/state/log/supervisor.log",
+    "/state/log/keygen.log",
+];
 const WNOHANG: i32 = 1;
 const SIGTERM: i32 = 15;
 const SIGKILL: i32 = 9;
@@ -38,6 +49,43 @@ struct Watch {
 
 fn log_msg(text: &str) {
     eprintln!("[supervise] {text}");
+}
+
+/// Keep each log from filling the state disk. The writers use append, so
+/// shortening the file in place keeps their next write at the new end.
+fn cap_log(path: &str, max: u64, keep: u64) {
+    let Ok(len) = std::fs::metadata(path).map(|meta| meta.len()) else {
+        return;
+    };
+    if len <= max {
+        return;
+    }
+    let Ok(mut file) = File::options().read(true).write(true).open(path) else {
+        return;
+    };
+    let keep = keep.min(len);
+    if file.seek(SeekFrom::Start(len - keep)).is_err() {
+        return;
+    }
+    let mut buf = vec![0u8; keep as usize];
+    if file.read_exact(&mut buf).is_err() {
+        return;
+    }
+    if let Some(pos) = buf.iter().position(|byte| *byte == b'\n') {
+        buf.drain(..=pos);
+    }
+    if file.set_len(0).is_err() || file.seek(SeekFrom::Start(0)).is_err() {
+        return;
+    }
+    let _ = file.write_all(&buf);
+    log_msg(&format!("{path} was over {max} bytes; kept the last chunk"));
+}
+
+fn cap_logs() {
+    cap_log(MINT_LOG, MINT_LOG_MAX, MINT_LOG_KEEP);
+    for path in LOGS {
+        cap_log(path, LOG_MAX, LOG_KEEP);
+    }
 }
 
 fn cmdline_is(pid: i32, path: &str) -> bool {
@@ -218,6 +266,9 @@ impl Watch {
     fn ensure_zebra(&mut self) {
         let Some(pid) = living_pid(ZEBRA) else {
             log_msg("starting zebra");
+            if let Some(mint) = living_pid(MINT) {
+                stop_pid(mint);
+            }
             self.zebra_ready = false;
             self.zebra_misses = 0;
             self.mint_ready = false;
@@ -237,14 +288,16 @@ impl Watch {
             self.zebra_misses = 0;
             return;
         }
-        if !self.zebra_ready {
+        // A stale tip fails /ready and still passes /healthy. Restarting Zebra
+        // does not create a block. Mint still waits for /ready.
+        if !self.zebra_ready || http_ok(8080, "/healthy") {
             return;
         }
         self.zebra_misses += 1;
         if self.zebra_misses < FAIL_LIMIT {
             return;
         }
-        log_msg("zebra lost readiness, restarting zebra and mint");
+        log_msg("zebra is not healthy, restarting zebra and mint");
         stop_pid(pid);
         if let Some(mint) = living_pid(MINT) {
             stop_pid(mint);
@@ -272,6 +325,7 @@ fn main() {
     };
     loop {
         reap();
+        cap_logs();
         watch.ensure_zebra();
         ensure_forward();
         watch.ensure_mint();
