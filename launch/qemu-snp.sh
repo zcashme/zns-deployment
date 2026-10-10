@@ -222,6 +222,9 @@ launch() {
   check_kernel
   check_cpu
 
+  # zns-forward publishes mint on guest 9465 and Zebra metrics on guest 9998.
+  # Grafana on this host scrapes 127.0.0.1:9465/metrics and 127.0.0.1:9999/metrics.
+  # hostfwd is not part of the launch measurement.
   exec qemu-system-x86_64 \
     -enable-kvm \
     -machine "${MACHINE},confidential-guest-support=sev0,vmport=off" \
@@ -235,7 +238,7 @@ launch() {
     -append "$CMDLINE" \
     -drive "file=${ZNS_STATE_IMG},if=virtio,format=raw" \
     -drive "file=${ZEBRA_STATE_IMG},if=virtio,format=raw" \
-    -netdev user,id=net0 \
+    -netdev user,id=net0,hostfwd=tcp:127.0.0.1:9465-:9465,hostfwd=tcp:127.0.0.1:9999-:9998 \
     -device virtio-net-pci,netdev=net0 \
     -nographic \
     -no-reboot

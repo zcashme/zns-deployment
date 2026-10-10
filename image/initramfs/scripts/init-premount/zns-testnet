@@ -1,7 +1,8 @@
 #!/bin/sh
 # Testnet guest init. PID 1 via rdinit=/scripts/init-premount/zns-testnet.
 # Mount and DHCP match zns-keygen/deploy/testnet/guest-init.sh.
-# Zebra, keygen, and mint match zns-guest-testnet-final.sh.
+# zns-supervise keeps Zebra, mint, and the metrics forwarder running.
+# Logs are under /state/log and stay on the state disk across a QEMU restart.
 set -eu
 
 PREREQ=""
@@ -17,9 +18,8 @@ prereqs)
 esac
 
 ZEBRA_CONFIG="/etc/zebra/zebrad.toml"
-ZEBRA_LOG="/tmp/zebra.log"
-MINT_LOG="/tmp/zns-mint.log"
 STATE_DIR="/state"
+SUP_PID=""
 PARAMS_DIR="/root/.zcash-params"
 
 # ext4 UUIDs of the host volumes, so mount order does not matter.
@@ -84,6 +84,8 @@ mount "$ZNS_DEV" /state || fatal "could not mount ZNS state from $ZNS_DEV"
 log "mounting Zebra state from $ZEBRA_DEV"
 mount "$ZEBRA_DEV" /var/lib/zebra || fatal "could not mount Zebra state from $ZEBRA_DEV"
 
+mkdir -p "$STATE_DIR/log" || fatal "could not create $STATE_DIR/log"
+
 ip link set lo up || fatal "could not bring up lo"
 
 NIC=""
@@ -103,7 +105,16 @@ log "using network interface $NIC"
 ip link set "$NIC" up || fatal "could not bring up $NIC"
 
 log "requesting DHCP lease"
-ipconfig -c dhcp -t 30 "$NIC" || fatal "DHCP failed on $NIC"
+dhcp_ok=0
+for _try in 1 2 3; do
+  if ipconfig -c dhcp -t 30 "$NIC"; then
+    dhcp_ok=1
+    break
+  fi
+  log "DHCP attempt ${_try} failed"
+  sleep 5 || fatal "sleep failed"
+done
+[ "$dhcp_ok" -eq 1 ] || fatal "DHCP failed on $NIC"
 
 NETCONF="/run/net-${NIC}.conf"
 if [ ! -f "$NETCONF" ]; then
@@ -139,78 +150,47 @@ if ! grep -q 'indexer_listen_addr = "127.0.0.1:18230"' "$ZEBRA_CONFIG"; then
   fatal "Zebra gRPC listener 127.0.0.1:18230 is not configured"
 fi
 
-if pidof zebrad >/dev/null 2>&1; then
-  log "Zebra is already running (pid $(pidof zebrad))"
-else
-  log "starting Zebra"
-  zebrad -c "$ZEBRA_CONFIG" start >"$ZEBRA_LOG" 2>&1 &
-fi
+start_supervisor() {
+  if [ -n "$SUP_PID" ] && kill -0 "$SUP_PID" 2>/dev/null; then
+    return
+  fi
+  log "starting supervisor"
+  /usr/local/bin/zns-supervise >>"$STATE_DIR/log/supervisor.log" 2>&1 &
+  SUP_PID=$!
+}
+
+start_supervisor
 
 log "waiting for Zebra readiness on http://127.0.0.1:8080/ready"
-
-until wget -q -O /dev/null http://127.0.0.1:8080/ready 2>/dev/null; do
-  if ! pidof zebrad >/dev/null 2>&1; then
-    tail -40 "$ZEBRA_LOG" 2>/dev/null || true
-    fatal "Zebra exited while waiting for readiness"
+while ! wget -q -T 5 -O /dev/null http://127.0.0.1:8080/ready 2>/dev/null; do
+  if ! kill -0 "$SUP_PID" 2>/dev/null; then
+    log "supervisor exited while waiting for Zebra"
+    SUP_PID=""
+    start_supervisor
   fi
-  tail -20 "$ZEBRA_LOG" 2>/dev/null || true
   sleep 5 || fatal "sleep failed"
 done
-
 log "Zebra is ready"
-
-if ! grep -qi ':4738' /proc/net/tcp /proc/net/tcp6 2>/dev/null; then
-  fatal "Zebra JSON-RPC 18232 is not listening"
-fi
-
-if ! grep -qi ':4736' /proc/net/tcp /proc/net/tcp6 2>/dev/null; then
-  fatal "Zebra gRPC 18230 is not listening"
-fi
 
 cd "$STATE_DIR" || fatal "could not enter $STATE_DIR"
 
-if [ -e "$STATE_DIR/keys/zns_seed.capsule" ]; then
-  log "ceremony capsule present, skipping keygen"
-else
-  log "starting fresh keygen ceremony"
-  log "When the Treasury funding address appears, fund it externally."
-  log "The script will remain here while zns-keygen waits for funding."
+log "running keygen"
+log "keygen output is in $STATE_DIR/log/keygen.log"
+while ! zns-keygen >>"$STATE_DIR/log/keygen.log" 2>&1; do
+  log "keygen failed, retrying in 30s"
+  sleep 30 || fatal "sleep failed"
+  if ! kill -0 "$SUP_PID" 2>/dev/null; then
+    SUP_PID=""
+    start_supervisor
+  fi
+done
+log "ceremony complete"
 
-  zns-keygen || fatal "zns-keygen failed"
-
-  log "ceremony completed successfully"
-fi
-
-if pidof zns-mint >/dev/null 2>&1; then
-  MINT_PID=$(pidof zns-mint)
-  log "mint is already running (pid $MINT_PID)"
-else
-  log "starting mint"
-  /usr/local/bin/zns-mint >"$MINT_LOG" 2>&1 &
-  MINT_PID=$!
-  log "mint started as pid $MINT_PID"
-fi
-
-sleep 2 || fatal "sleep failed"
-
-if ! pidof zns-mint >/dev/null 2>&1; then
-  wait "$MINT_PID" || status=$?
-  tail -80 "$MINT_LOG" 2>/dev/null || true
-  fatal "mint exited with status ${status:-0}"
-fi
-
-log "mint is running"
-log "Zebra pid: $(pidof zebrad)"
-log "Mint pid:  $(pidof zns-mint)"
-log "Mint log:  $MINT_LOG"
-log "Zebra log: $ZEBRA_LOG"
-
-echo
-log "last 40 mint log lines:"
-tail -40 "$MINT_LOG" 2>/dev/null || true
-
-if [ "$$" -eq 1 ]; then
-  wait "$MINT_PID" || status=$?
-  tail -80 "$MINT_LOG" 2>/dev/null || true
-  fatal "mint exited with status ${status:-0}"
-fi
+log "supervisor pid $SUP_PID"
+log "guest logs are in $STATE_DIR/log"
+while true; do
+  wait "$SUP_PID" || true
+  log "supervisor exited, restarting"
+  SUP_PID=""
+  start_supervisor
+done
