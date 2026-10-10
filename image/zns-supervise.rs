@@ -16,6 +16,7 @@ const CHECK_INTERVAL: u64 = 30;
 const FAIL_LIMIT: i32 = 3;
 const LOG_MAX: u64 = 64 * 1024 * 1024;
 const LOG_KEEP: u64 = 8 * 1024 * 1024;
+const COPY_BUF: usize = 64 * 1024;
 const MINT_LOG: &str = "/state/log/mint.log";
 const MINT_LOG_MAX: u64 = 1024 * 1024 * 1024;
 const MINT_LOG_KEEP: u64 = MINT_LOG_MAX - LOG_MAX;
@@ -41,7 +42,10 @@ extern "C" {
 }
 
 struct Watch {
-    zebra_ready: bool,
+    /// /ready has succeeded at least once. The first sync is left alone until then.
+    zebra_seen_ready: bool,
+    /// /ready succeeded on this check. Mint is started only while this is set.
+    zebra_ready_now: bool,
     zebra_misses: i32,
     mint_ready: bool,
     mint_misses: i32,
@@ -53,6 +57,8 @@ fn log_msg(text: &str) {
 
 /// Keep each log from filling the state disk. The writers use append, so
 /// shortening the file in place keeps their next write at the new end.
+/// The tail is copied through a fixed buffer so a 1 GB mint log does not
+/// allocate that much memory.
 fn cap_log(path: &str, max: u64, keep: u64) {
     let Ok(len) = std::fs::metadata(path).map(|meta| meta.len()) else {
         return;
@@ -64,20 +70,57 @@ fn cap_log(path: &str, max: u64, keep: u64) {
         return;
     };
     let keep = keep.min(len);
-    if file.seek(SeekFrom::Start(len - keep)).is_err() {
+    let mut start = len - keep;
+    if file.seek(SeekFrom::Start(start)).is_err() {
         return;
     }
-    let mut buf = vec![0u8; keep as usize];
-    if file.read_exact(&mut buf).is_err() {
+    let mut buf = [0u8; COPY_BUF];
+    if let Ok(n) = file.read(&mut buf) {
+        if let Some(pos) = buf[..n].iter().position(|byte| *byte == b'\n') {
+            start += pos as u64 + 1;
+        }
+    }
+    let tmp_path = format!("{path}.tail");
+    let Ok(mut tmp) = File::create(&tmp_path) else {
+        return;
+    };
+    if file.seek(SeekFrom::Start(start)).is_err() {
+        let _ = std::fs::remove_file(&tmp_path);
         return;
     }
-    if let Some(pos) = buf.iter().position(|byte| *byte == b'\n') {
-        buf.drain(..=pos);
+    let mut left = len - start;
+    while left > 0 {
+        let want = (left as usize).min(COPY_BUF);
+        let Ok(n) = file.read(&mut buf[..want]) else {
+            let _ = std::fs::remove_file(&tmp_path);
+            return;
+        };
+        if n == 0 {
+            break;
+        }
+        if tmp.write_all(&buf[..n]).is_err() {
+            let _ = std::fs::remove_file(&tmp_path);
+            return;
+        }
+        left -= n as u64;
     }
-    if file.set_len(0).is_err() || file.seek(SeekFrom::Start(0)).is_err() {
+    if file.set_len(0).is_err() || file.seek(SeekFrom::Start(0)).is_err() || tmp.seek(SeekFrom::Start(0)).is_err()
+    {
+        let _ = std::fs::remove_file(&tmp_path);
         return;
     }
-    let _ = file.write_all(&buf);
+    loop {
+        let Ok(n) = tmp.read(&mut buf) else {
+            break;
+        };
+        if n == 0 {
+            break;
+        }
+        if file.write_all(&buf[..n]).is_err() {
+            break;
+        }
+    }
+    let _ = std::fs::remove_file(&tmp_path);
     log_msg(&format!("{path} was over {max} bytes; kept the last chunk"));
 }
 
@@ -231,7 +274,7 @@ fn ensure_forward() {
 
 impl Watch {
     fn ensure_mint(&mut self) {
-        if !self.zebra_ready || !ceremony_complete() {
+        if !self.zebra_ready_now || !ceremony_complete() {
             return;
         }
         let Some(pid) = living_pid(MINT) else {
@@ -269,7 +312,8 @@ impl Watch {
             if let Some(mint) = living_pid(MINT) {
                 stop_pid(mint);
             }
-            self.zebra_ready = false;
+            self.zebra_seen_ready = false;
+            self.zebra_ready_now = false;
             self.zebra_misses = 0;
             self.mint_ready = false;
             self.mint_misses = 0;
@@ -281,16 +325,23 @@ impl Watch {
             return;
         };
         if http_ok(8080, "/ready") {
-            if !self.zebra_ready {
+            if !self.zebra_seen_ready {
                 log_msg("zebra is ready");
             }
-            self.zebra_ready = true;
+            self.zebra_seen_ready = true;
+            self.zebra_ready_now = true;
             self.zebra_misses = 0;
             return;
         }
-        // A stale tip fails /ready and still passes /healthy. Restarting Zebra
-        // does not create a block. Mint still waits for /ready.
-        if !self.zebra_ready || http_ok(8080, "/healthy") {
+        self.zebra_ready_now = false;
+        // The first sync has not passed /ready yet. Leave that process alone.
+        if !self.zebra_seen_ready {
+            return;
+        }
+        // A stale tip fails /ready and still passes /healthy. That is not a
+        // dead process, and it does not allow mint to start.
+        if http_ok(8080, "/healthy") {
+            self.zebra_misses = 0;
             return;
         }
         self.zebra_misses += 1;
@@ -302,7 +353,8 @@ impl Watch {
         if let Some(mint) = living_pid(MINT) {
             stop_pid(mint);
         }
-        self.zebra_ready = false;
+        self.zebra_seen_ready = false;
+        self.zebra_ready_now = false;
         self.zebra_misses = 0;
         self.mint_ready = false;
         self.mint_misses = 0;
@@ -318,7 +370,8 @@ fn main() {
     let _ = std::fs::create_dir_all("/state/log");
     log_msg("supervisor started");
     let mut watch = Watch {
-        zebra_ready: false,
+        zebra_seen_ready: false,
+        zebra_ready_now: false,
         zebra_misses: 0,
         mint_ready: false,
         mint_misses: 0,
