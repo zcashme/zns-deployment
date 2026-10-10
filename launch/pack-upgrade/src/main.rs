@@ -86,17 +86,13 @@ fn load_source(root: &Path) -> Result<Source, String> {
 fn required_u64(file: &toml::Table, key: &str, env_name: &str) -> Result<u64, String> {
     let text = pick(file, key, env_name)?;
     let value = parse_int(&text).map_err(|_| format!("{key} {text:?} is not an integer"))?;
-    u64::try_from(value).map_err(|_| format!("{key} must be a u64"))
+    let value = u64::try_from(value).map_err(|_| format!("{key} must be a u64"))?;
+    toml_integer(key, value)
 }
 
 fn required_policy(file: &toml::Table) -> Result<u64, String> {
     let text = pick(file, "from_guest_policy", "UPGRADE_FROM_GUEST_POLICY")?;
-    let value = parse_int(&text).map_err(|_| format!("guest policy {text:?} is not an integer"))?;
-    let value = u64::try_from(value).map_err(|_| "guest policy must be a non-zero u64".to_string())?;
-    if value == 0 {
-        return Err("guest policy must be a non-zero u64".to_string());
-    }
-    Ok(value)
+    policy_value(&text)
 }
 
 fn pick(file: &toml::Table, key: &str, env_name: &str) -> Result<String, String> {
@@ -162,14 +158,7 @@ fn launch_policy(root: &Path) -> Result<u64, String> {
     let text = String::from_utf8_lossy(&output.stdout);
     for line in text.lines() {
         if let Some(value) = line.strip_prefix("guest_policy=") {
-            let parsed =
-                parse_int(value).map_err(|_| format!("guest policy {value:?} is not an integer"))?;
-            let policy = u64::try_from(parsed)
-                .map_err(|_| "guest policy must be a non-zero u64".to_string())?;
-            if policy == 0 {
-                return Err("guest policy must be a non-zero u64".to_string());
-            }
-            return Ok(policy);
+            return policy_value(value);
         }
     }
     Err("launch parameters have no guest_policy".to_string())
@@ -219,6 +208,23 @@ release = \"{release}\"
 
 fn env_string(name: &str) -> String {
     env::var(name).unwrap_or_default().trim().to_string()
+}
+
+/// `toml` stores an integer as `i64`. A larger value cannot be read back.
+fn toml_integer(name: &str, value: u64) -> Result<u64, String> {
+    if value > i64::MAX as u64 {
+        return Err(format!("{name} must fit in a TOML integer"));
+    }
+    Ok(value)
+}
+
+fn policy_value(text: &str) -> Result<u64, String> {
+    let value = parse_int(text).map_err(|_| format!("guest policy {text:?} is not an integer"))?;
+    let value = u64::try_from(value).map_err(|_| "guest policy must be a non-zero u64".to_string())?;
+    if value == 0 {
+        return Err("guest policy must be a non-zero u64".to_string());
+    }
+    toml_integer("guest policy", value)
 }
 
 fn parse_int(text: &str) -> Result<i128, ()> {

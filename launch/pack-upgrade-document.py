@@ -38,8 +38,10 @@ def policy(text):
         value = int(text.strip(), 0)
     except ValueError:
         fail(f"guest policy {text!r} is not an integer")
-    if value <= 0 or value > 0xFFFFFFFFFFFFFFFF:
+    if value <= 0:
         fail("guest policy must be a non-zero u64")
+    if value > 0x7FFFFFFFFFFFFFFF:
+        fail("guest policy must fit in a TOML integer")
     return value
 
 
@@ -77,8 +79,8 @@ def load_source():
         sequence = int(sequence_text, 0)
     except ValueError:
         fail(f"sequence {sequence_text!r} is not an integer")
-    if sequence < 0 or sequence > 0xFFFFFFFFFFFFFFFF:
-        fail("sequence must be a u64")
+    if sequence < 0 or sequence > 0x7FFFFFFFFFFFFFFF:
+        fail("sequence must fit in a TOML integer")
     return {
         "sequence": sequence,
         "from_measurement": hex_bytes(
