@@ -320,7 +320,7 @@ fi
 build_bin "$SRC/zns-mint" --bin zns-mint --features testnet
 build_bin "$SRC/zns-keygen" --bin zns-keygen --features testnet
 build_bin "$SRC/zns-migrate" --bin zns-migrate
-build_bin "$SRC/zebra" -p zebrad --features indexer
+build_bin "$SRC/zebra" -p zebrad --features indexer,prometheus
 
 rm -rf "$STAGE" "$BIN"
 mkdir -p "$BIN" \
@@ -335,12 +335,19 @@ install -m 0755 "$SRC/zns-mint/target/release/zns-mint" "$BIN/zns-mint"
 install -m 0755 "$SRC/zns-keygen/target/release/zns-keygen" "$BIN/zns-keygen"
 install -m 0755 "$SRC/zns-migrate/target/release/zns-migrate" "$BIN/zns-migrate"
 install -m 0755 "$SRC/zebra/target/release/zebrad" "$BIN/zebrad"
-install -m 0755 "$BIN/zns-mint" "$BIN/zns-keygen" "$BIN/zns-migrate" "$BIN/zebrad" "$STAGE/usr/local/bin/"
+# These two programs have no dependencies, so compile them with rustc directly.
+rustc --edition 2021 -D warnings -C opt-level=3 -C strip=symbols \
+  -o "$BIN/zns-supervise" "$ROOT/image/zns-supervise.rs"
+rustc --edition 2021 -D warnings -C opt-level=3 -C strip=symbols \
+  -o "$BIN/zns-forward" "$ROOT/image/metrics-forward.rs"
+install -m 0755 "$BIN/zns-supervise" "$BIN/zns-forward" "$BIN/zns-mint" "$BIN/zns-keygen" "$BIN/zns-migrate" "$BIN/zebrad" "$STAGE/usr/local/bin/"
 python3 "$ROOT/image/install-guest.py" \
   --archive "$(toml_get guest_archive)" \
   --debs "$ROOT/image/guest-debs.sha256" \
   --work "$BUILD/guest" \
   --stage "$STAGE" \
+  --bin "$STAGE/usr/local/bin/zns-supervise" \
+  --bin "$STAGE/usr/local/bin/zns-forward" \
   --bin "$STAGE/usr/local/bin/zns-mint" \
   --bin "$STAGE/usr/local/bin/zns-keygen" \
   --bin "$STAGE/usr/local/bin/zns-migrate" \
