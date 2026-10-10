@@ -1,35 +1,15 @@
 #!/bin/sh
-# Testnet guest init. PID 1 via rdinit=/scripts/init-premount/zns-testnet.
-# Mount and DHCP match zns-keygen/deploy/testnet/guest-init.sh.
+# Testnet guest init. This script is PID 1.
+# Mount the two state disks, get an address by DHCP, then run the ceremony.
 # zns-supervise keeps Zebra, mint, and the metrics forwarder running.
-# Logs are under /state/log and stay on the state disk across a QEMU restart.
+# Logs live under /state/log and stay on the state disk across a QEMU restart.
 set -eu
-
-PREREQ=""
-prereqs() {
-  echo "$PREREQ"
-}
-
-case "${1:-}" in
-prereqs)
-  prereqs
-  exit 0
-  ;;
-esac
 
 ZEBRA_CONFIG="/etc/zebra/zebrad.toml"
 STATE_DIR="/state"
 SUP_PID=""
 KEYGEN_PID=""
-KEYGEN_EXIT=""
 PARAMS_DIR="/root/.zcash-params"
-
-# ext4 UUIDs of the host volumes, so mount order does not matter.
-# zns-test-state.img -> /state
-# zebra-state.img    -> /var/lib/zebra
-# Changing these changes the initrd measurement.
-ZNS_UUID="0ece68d8-f963-4985-a751-84128c9ae1c4"
-ZEBRA_UUID="589fd35e-42f5-460c-aa84-7458ac3f11a0"
 
 log() {
   echo "[zns-testnet] $*"
@@ -152,7 +132,7 @@ if ! grep -q 'indexer_listen_addr = "127.0.0.1:18230"' "$ZEBRA_CONFIG"; then
   fatal "Zebra gRPC listener 127.0.0.1:18230 is not configured"
 fi
 
-# A zombie still answers kill -0. /proc state Z means it has exited.
+# kill -0 reports a zombie as alive. State Z in /proc means the process has exited.
 alive() {
   pid="$1"
   [ -n "$pid" ] || return 1
@@ -195,7 +175,7 @@ watch_supervisor() {
 
 start_keygen() {
   : >"$KEYGEN_EXIT" || fatal "could not write $KEYGEN_EXIT"
-  # set -e would skip the status write when keygen fails.
+  # set -e would skip writing the exit status when keygen fails.
   (
     set +e
     zns-keygen >>"$STATE_DIR/log/keygen.log" 2>&1

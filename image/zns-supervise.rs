@@ -1,8 +1,9 @@
-//! Keep zebrad, zns-mint, and the metrics forwarder running.
-//! Restart a process that exits. Restart one that was healthy and then fails
-//! three checks. Leave Zebra alone while it is still syncing.
+//! Keep Zebra, mint, and the metrics forwarder running.
 //!
-//! Built with the pinned rustc from versions.toml. No host C compiler.
+//! Restart a process that has exited. After Zebra has passed /ready, or mint
+//! has passed /metrics, restart that process once three checks fail. Leave
+//! Zebra alone during its first sync. Start mint only while Zebra's /ready
+//! check is succeeding and the ceremony is complete.
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -55,10 +56,10 @@ fn log_msg(text: &str) {
     eprintln!("[supervise] {text}");
 }
 
-/// Keep each log from filling the state disk. The writers use append, so
-/// shortening the file in place keeps their next write at the new end.
-/// The tail is copied through a fixed buffer so a 1 GB mint log does not
-/// allocate that much memory.
+/// Once `path` is larger than `max`, keep its last `keep` bytes, starting
+/// at the next line. Copy that tail toward the start of this same file, then
+/// shorten the file. The writers still have it open for append, so the next
+/// write continues at the new end.
 fn cap_log(path: &str, max: u64, keep: u64) {
     let Ok(len) = std::fs::metadata(path).map(|meta| meta.len()) else {
         return;
@@ -80,47 +81,33 @@ fn cap_log(path: &str, max: u64, keep: u64) {
             start += pos as u64 + 1;
         }
     }
-    let tmp_path = format!("{path}.tail");
-    let Ok(mut tmp) = File::create(&tmp_path) else {
-        return;
-    };
-    if file.seek(SeekFrom::Start(start)).is_err() {
-        let _ = std::fs::remove_file(&tmp_path);
+    if start >= len {
         return;
     }
-    let mut left = len - start;
-    while left > 0 {
-        let want = (left as usize).min(COPY_BUF);
+    // The kept tail starts more than one buffer past the beginning, so each
+    // chunk is read before those bytes are overwritten.
+    let mut src = start;
+    let mut dst = 0u64;
+    while src < len {
+        if file.seek(SeekFrom::Start(src)).is_err() {
+            return;
+        }
+        let want = ((len - src) as usize).min(COPY_BUF);
         let Ok(n) = file.read(&mut buf[..want]) else {
-            let _ = std::fs::remove_file(&tmp_path);
             return;
         };
         if n == 0 {
             break;
         }
-        if tmp.write_all(&buf[..n]).is_err() {
-            let _ = std::fs::remove_file(&tmp_path);
+        if file.seek(SeekFrom::Start(dst)).is_err() || file.write_all(&buf[..n]).is_err() {
             return;
         }
-        left -= n as u64;
+        src += n as u64;
+        dst += n as u64;
     }
-    if file.set_len(0).is_err() || file.seek(SeekFrom::Start(0)).is_err() || tmp.seek(SeekFrom::Start(0)).is_err()
-    {
-        let _ = std::fs::remove_file(&tmp_path);
+    if file.set_len(dst).is_err() {
         return;
     }
-    loop {
-        let Ok(n) = tmp.read(&mut buf) else {
-            break;
-        };
-        if n == 0 {
-            break;
-        }
-        if file.write_all(&buf[..n]).is_err() {
-            break;
-        }
-    }
-    let _ = std::fs::remove_file(&tmp_path);
     log_msg(&format!("{path} was over {max} bytes; kept the last chunk"));
 }
 
@@ -183,9 +170,10 @@ fn reap() {
     }
 }
 
-/// ECHILD means this supervisor was restarted and does not own the process.
-/// That is not proof the process exited. Only a collected child or a failed
-/// `kill(pid, 0)` ends the wait.
+/// Ask `pid` to exit, then kill it if it is still there.
+/// `waitpid` only collects a child of this process. A supervisor that was
+/// itself restarted is not the parent, so a failed `waitpid` does not mean
+/// the process is gone. `kill(pid, 0)` is the check that does.
 fn stop_pid(pid: i32) {
     if pid <= 1 {
         return;
@@ -338,8 +326,9 @@ impl Watch {
         if !self.zebra_seen_ready {
             return;
         }
-        // A stale tip fails /ready and still passes /healthy. That is not a
-        // dead process, and it does not allow mint to start.
+        // /ready also requires a recent chain tip. /healthy only checks that
+        // peers are connected. A stale tip is not a reason to restart Zebra.
+        // Mint stays stopped until /ready succeeds.
         if http_ok(8080, "/healthy") {
             self.zebra_misses = 0;
             return;

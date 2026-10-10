@@ -222,9 +222,9 @@ launch() {
   check_kernel
   check_cpu
 
-  # zns-forward publishes mint on guest 9465 and Zebra metrics on guest 9998.
-  # Grafana on this host scrapes 127.0.0.1:9465/metrics and 127.0.0.1:9999/metrics.
-  # hostfwd is not part of the launch measurement.
+  # zns-forward listens on the guest's external ports. Grafana on this host
+  # scrapes mint at 127.0.0.1:9465/metrics and Zebra at 127.0.0.1:9999/metrics.
+  # These forwards are not part of the measurement.
   exec qemu-system-x86_64 \
     -enable-kvm \
     -machine "${MACHINE},confidential-guest-support=sev0,vmport=off" \

@@ -335,7 +335,7 @@ install -m 0755 "$SRC/zns-mint/target/release/zns-mint" "$BIN/zns-mint"
 install -m 0755 "$SRC/zns-keygen/target/release/zns-keygen" "$BIN/zns-keygen"
 install -m 0755 "$SRC/zns-migrate/target/release/zns-migrate" "$BIN/zns-migrate"
 install -m 0755 "$SRC/zebra/target/release/zebrad" "$BIN/zebrad"
-# zns-supervise and zns-forward have no crates, so cargo is not involved.
+# These two programs have no dependencies, so compile them with rustc directly.
 rustc --edition 2021 -D warnings -C opt-level=3 -C strip=symbols \
   -o "$BIN/zns-supervise" "$ROOT/image/zns-supervise.rs"
 rustc --edition 2021 -D warnings -C opt-level=3 -C strip=symbols \

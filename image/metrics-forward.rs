@@ -1,8 +1,9 @@
-//! Publish the loopback metrics ports where QEMU's host forward can reach them.
-//! 0.0.0.0:9465 splices to mint at 127.0.0.1:9464.
-//! 0.0.0.0:9998 splices to Zebra at 127.0.0.1:9999.
+//! Copy metrics connections from the guest's external ports to the loopback
+//! ports where mint and Zebra listen. QEMU can forward an external port to
+//! the host. It cannot forward 127.0.0.1.
 //!
-//! Built with the pinned rustc from versions.toml. No host C compiler.
+//! 0.0.0.0:9465 forwards to mint at 127.0.0.1:9464.
+//! 0.0.0.0:9998 forwards to Zebra at 127.0.0.1:9999.
 
 use std::io;
 use std::net::{Shutdown, TcpListener, TcpStream};
