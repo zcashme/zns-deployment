@@ -235,7 +235,7 @@ launch() {
     -append "$CMDLINE" \
     -drive "file=${ZNS_STATE_IMG},if=virtio,format=raw" \
     -drive "file=${ZEBRA_STATE_IMG},if=virtio,format=raw" \
-    -netdev user,id=net0 \
+    -netdev user,id=net0,hostfwd=tcp:127.0.0.1:9464-:9464,hostfwd=tcp:127.0.0.1:9999-:9999 \
     -device virtio-net-pci,netdev=net0 \
     -nographic \
     -no-reboot

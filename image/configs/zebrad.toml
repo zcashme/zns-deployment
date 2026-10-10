@@ -23,6 +23,11 @@ ready_max_blocks_behind = 2
 ready_max_tip_age = "5m"
 enforce_on_test_networks = true
 
+# Prometheus scrape endpoint. Reached only through the qemu-snp.sh hostfwd,
+# which binds the host side to loopback.
+[metrics]
+endpoint_addr = "0.0.0.0:9999"
+
 [tracing]
 use_color = false
 force_use_color = false
