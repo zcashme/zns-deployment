@@ -187,7 +187,7 @@ start_keygen() {
 start_supervisor
 
 log "waiting for Zebra readiness on http://127.0.0.1:8080/ready"
-while ! wget -q -T 5 -O /dev/null http://127.0.0.1:8080/ready 2>/dev/null; do
+while ! wget -q -O /dev/null http://127.0.0.1:8080/ready 2>/dev/null; do
   watch_supervisor
   sleep 5 || fatal "sleep failed"
 done
