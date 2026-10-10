@@ -1,0 +1,13 @@
+[package]
+name = "pack-upgrade"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# The image build checks out canon_commit at this path. Encoding uses that
+# tree's canonical_encoding, not a second copy of the byte layout.
+[dependencies]
+hex = "0.4"
+sha2 = "0.10"
+toml = "0.8"
+zns-canon = { path = "../../build/src/zns-canon" }
