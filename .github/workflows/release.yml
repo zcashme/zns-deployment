@@ -21,12 +21,11 @@ on:
         type: string
       sequence:
         description: Upgrade sequence
-        required: false
-        default: "1"
+        required: true
         type: string
       from_guest_policy:
-        description: Source guest policy; defaults to this image's policy
-        required: false
+        description: Source guest policy, for example 0x30000
+        required: true
         type: string
 
 permissions:
@@ -92,7 +91,7 @@ jobs:
           UPGRADE_SOURCE_CAPSULE_HASH: ${{ github.event.inputs.source_capsule_hash }}
           UPGRADE_SEQUENCE: ${{ github.event.inputs.sequence }}
           UPGRADE_FROM_GUEST_POLICY: ${{ github.event.inputs.from_guest_policy }}
-        run: python3 launch/pack-upgrade-document.py
+        run: cargo run --quiet --release --locked --manifest-path launch/pack-upgrade/Cargo.toml
 
       - name: Generate release manifest
         run: |
