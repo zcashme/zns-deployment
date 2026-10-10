@@ -256,7 +256,6 @@ need python3
 need zstd
 need protoc
 need cmake
-need gcc
 
 NETWORK="$(toml_get network)"
 if [[ "$NETWORK" != "testnet" ]]; then
@@ -336,8 +335,11 @@ install -m 0755 "$SRC/zns-mint/target/release/zns-mint" "$BIN/zns-mint"
 install -m 0755 "$SRC/zns-keygen/target/release/zns-keygen" "$BIN/zns-keygen"
 install -m 0755 "$SRC/zns-migrate/target/release/zns-migrate" "$BIN/zns-migrate"
 install -m 0755 "$SRC/zebra/target/release/zebrad" "$BIN/zebrad"
-gcc -O2 -s -Wall -Wextra -Werror -o "$BIN/zns-supervise" "$ROOT/image/zns-supervise.c"
-gcc -O2 -s -Wall -Wextra -Werror -o "$BIN/zns-forward" "$ROOT/image/metrics-forward.c"
+# zns-supervise and zns-forward have no crates, so cargo is not involved.
+rustc --edition 2021 -D warnings -C opt-level=3 -C strip=symbols \
+  -o "$BIN/zns-supervise" "$ROOT/image/zns-supervise.rs"
+rustc --edition 2021 -D warnings -C opt-level=3 -C strip=symbols \
+  -o "$BIN/zns-forward" "$ROOT/image/metrics-forward.rs"
 install -m 0755 "$BIN/zns-supervise" "$BIN/zns-forward" "$BIN/zns-mint" "$BIN/zns-keygen" "$BIN/zns-migrate" "$BIN/zebrad" "$STAGE/usr/local/bin/"
 python3 "$ROOT/image/install-guest.py" \
   --archive "$(toml_get guest_archive)" \

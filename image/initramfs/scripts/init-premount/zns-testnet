@@ -20,6 +20,8 @@ esac
 ZEBRA_CONFIG="/etc/zebra/zebrad.toml"
 STATE_DIR="/state"
 SUP_PID=""
+KEYGEN_PID=""
+KEYGEN_EXIT=""
 PARAMS_DIR="/root/.zcash-params"
 
 # ext4 UUIDs of the host volumes, so mount order does not matter.
@@ -150,39 +152,96 @@ if ! grep -q 'indexer_listen_addr = "127.0.0.1:18230"' "$ZEBRA_CONFIG"; then
   fatal "Zebra gRPC listener 127.0.0.1:18230 is not configured"
 fi
 
+# A zombie still answers kill -0. /proc state Z means it has exited.
+alive() {
+  pid="$1"
+  [ -n "$pid" ] || return 1
+  [ -r "/proc/$pid/status" ] || return 1
+  line="$(grep '^State:' "/proc/$pid/status" 2>/dev/null || true)"
+  [ -n "$line" ] || return 1
+  rest="${line#State:}"
+  while [ "${rest# }" != "$rest" ]; do
+    rest="${rest# }"
+  done
+  while [ "${rest#	}" != "$rest" ]; do
+    rest="${rest#	}"
+  done
+  [ "${rest%"${rest#?}"}" != "Z" ]
+}
+
 start_supervisor() {
-  if [ -n "$SUP_PID" ] && kill -0 "$SUP_PID" 2>/dev/null; then
+  if alive "$SUP_PID"; then
     return
+  fi
+  if [ -n "$SUP_PID" ]; then
+    wait "$SUP_PID" || true
   fi
   log "starting supervisor"
   /usr/local/bin/zns-supervise >>"$STATE_DIR/log/supervisor.log" 2>&1 &
   SUP_PID=$!
 }
 
+watch_supervisor() {
+  if alive "$SUP_PID"; then
+    return
+  fi
+  if [ -n "$SUP_PID" ]; then
+    wait "$SUP_PID" || true
+    log "supervisor exited, restarting"
+  fi
+  SUP_PID=""
+  start_supervisor
+}
+
+start_keygen() {
+  : >"$KEYGEN_EXIT" || fatal "could not write $KEYGEN_EXIT"
+  # set -e would skip the status write when keygen fails.
+  (
+    set +e
+    zns-keygen >>"$STATE_DIR/log/keygen.log" 2>&1
+    echo $? >"$KEYGEN_EXIT"
+  ) &
+  KEYGEN_PID=$!
+}
+
 start_supervisor
 
 log "waiting for Zebra readiness on http://127.0.0.1:8080/ready"
 while ! wget -q -T 5 -O /dev/null http://127.0.0.1:8080/ready 2>/dev/null; do
-  if ! kill -0 "$SUP_PID" 2>/dev/null; then
-    log "supervisor exited while waiting for Zebra"
-    SUP_PID=""
-    start_supervisor
-  fi
+  watch_supervisor
   sleep 5 || fatal "sleep failed"
 done
 log "Zebra is ready"
 
 cd "$STATE_DIR" || fatal "could not enter $STATE_DIR"
+KEYGEN_EXIT="$STATE_DIR/log/keygen.exit"
 
 log "running keygen"
 log "keygen output is in $STATE_DIR/log/keygen.log"
-while ! zns-keygen >>"$STATE_DIR/log/keygen.log" 2>&1; do
-  log "keygen failed, retrying in 30s"
-  sleep 30 || fatal "sleep failed"
-  if ! kill -0 "$SUP_PID" 2>/dev/null; then
-    SUP_PID=""
-    start_supervisor
+start_keygen
+retry_left=0
+
+while true; do
+  watch_supervisor
+  if [ -n "$KEYGEN_PID" ] && ! alive "$KEYGEN_PID"; then
+    wait "$KEYGEN_PID" || true
+    status=""
+    read -r status <"$KEYGEN_EXIT" || status=""
+    KEYGEN_PID=""
+    if [ "$status" = "0" ]; then
+      break
+    fi
+    log "keygen failed, retrying in 30s"
+    retry_left=6
   fi
+  if [ -z "$KEYGEN_PID" ]; then
+    if [ "$retry_left" -gt 0 ]; then
+      retry_left=$((retry_left - 1))
+    else
+      start_keygen
+    fi
+  fi
+  sleep 5 || fatal "sleep failed"
 done
 log "ceremony complete"
 
