@@ -4,10 +4,10 @@
 #   sudo ./launch/fetch-release v0.1.x
 #   sudo ./launch/launch-target v0.1.x
 #
-# Reads the live tag from $ZNS_HOPS/current. Mounts that guest's upgrade and
-# transport directories, plus an empty pair for the following hop. QEMU runs
-# in the operator's tmux session zns-target. This command does not publish
-# upgrade files and does not change current.
+# Reads the live tag from $ZNS_HOPS/current. Verifies that tag's release,
+# mounts that guest's upgrade and transport directories, plus an empty pair
+# for the following hop. QEMU runs in the operator's tmux session zns-target.
+# This command does not publish upgrade files and does not change current.
 #
 # State images are only $ZNS_HOPS/images/<tag>/*.img. The ZNS disk is created
 # empty when missing. The Zebra disk is filled from the latest chain snapshot
@@ -52,9 +52,10 @@ if [[ ! -d "$upgrade" || ! -d "$transport" ]]; then
   exit 1
 fi
 
+"$HERE/fetch-release" "$to"
 initrd="$hops/images/${to}/release/zns-initrd.img"
-if [[ ! -s "$initrd" ]]; then
-  echo "missing $initrd; run fetch-release $to" >&2
+if [[ ! -s "$initrd" || -L "$initrd" ]]; then
+  echo "missing $initrd" >&2
   exit 1
 fi
 

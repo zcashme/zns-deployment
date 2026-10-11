@@ -29,12 +29,12 @@ to="$1"
 require_tag "$to"
 refuse_state_disk_overrides
 
-if ! command -v gh >/dev/null 2>&1; then
-  echo "missing gh" >&2
-  exit 1
+gh_user="$(id -un)"
+if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+  gh_user="$SUDO_USER"
 fi
-if ! gh auth status; then
-  echo "gh is not logged in for $(id -un)" >&2
+if ! operator_gh auth status; then
+  echo "gh is not logged in for ${gh_user}" >&2
   exit 1
 fi
 
@@ -151,9 +151,13 @@ printf '%s\n' "$to" >"$pending"
 "$HERE/fetch-release" "$to"
 "$HERE/launch-target" "$to"
 
-if [[ -f "$upgrade/upgrade.bin" && -f "$upgrade/upgrade.toml" && -f "$upgrade/upgrade.bundle.jsonl" ]]; then
+if [[ -f "$upgrade/upgrade.bin" && -f "$upgrade/upgrade.toml" && -f "$upgrade/upgrade.bundle.jsonl" ]] \
+  && cmp -s "$release_dir/upgrade.bin" "$upgrade/upgrade.bin" \
+  && cmp -s "$release_dir/upgrade.toml" "$upgrade/upgrade.toml" \
+  && cmp -s "$release_dir/upgrade.bundle.jsonl" "$upgrade/upgrade.bundle.jsonl"; then
   echo "upgrade files already in $upgrade"
 else
+  rm -f "$upgrade/upgrade.bin"
   cp "$release_dir/upgrade.toml" "$upgrade/upgrade.toml"
   cp "$release_dir/upgrade.bundle.jsonl" "$upgrade/upgrade.bundle.jsonl"
   cp "$release_dir/upgrade.bin" "$upgrade/upgrade.bin.partial"

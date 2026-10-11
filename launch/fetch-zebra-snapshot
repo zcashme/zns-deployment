@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# Download the latest Zebra chain snapshot for this guest's network.
+# Download a Zebra chain snapshot this guest can open.
 #
 #   sudo ./launch/fetch-zebra-snapshot
 #
 # Reads https://snapshots.zfnd.org/<network>/snapshots.json and keeps the
-# archive whose roles include "latest". The file is stored under
-# $ZNS_HOPS/snapshots/. A later run downloads again when that latest name
-# or checksum changes. The archive can be deleted once a Zebra disk built
+# newest archive whose db_major is zebra_db_format or zebra_db_format_previous
+# in versions.toml. A newer database format is not downloaded. The file is stored under
+# $ZNS_HOPS/snapshots/. A later run downloads again when that choice or its
+# checksum changes. The archive can be deleted once a Zebra disk built
 # from it is syncing; the disk image is the working copy.
 set -euo pipefail
 
@@ -38,6 +39,22 @@ if [[ -z "$network" ]]; then
   echo "versions.toml has no network" >&2
   exit 1
 fi
+db_format="$(grep -E '^zebra_db_format[[:space:]]*=' "$ROOT/versions.toml" | head -n 1 || true)"
+db_format="${db_format#*=}"
+db_format="${db_format//\"/}"
+db_format="${db_format//[[:space:]]/}"
+if [[ ! "$db_format" =~ ^[0-9]+$ ]]; then
+  echo "versions.toml has no zebra_db_format" >&2
+  exit 1
+fi
+db_previous="$(grep -E '^zebra_db_format_previous[[:space:]]*=' "$ROOT/versions.toml" | head -n 1 || true)"
+db_previous="${db_previous#*=}"
+db_previous="${db_previous//\"/}"
+db_previous="${db_previous//[[:space:]]/}"
+if [[ -n "$db_previous" && ! "$db_previous" =~ ^[0-9]+$ ]]; then
+  echo "versions.toml zebra_db_format_previous is not a number" >&2
+  exit 1
+fi
 
 hops="$(hops_root)"
 snapdir="$hops/snapshots"
@@ -45,31 +62,44 @@ mkdir -p "$snapdir"
 index="$snapdir/snapshots.json"
 curl -fsSL -A zns-deployment -o "$index" "https://snapshots.zfnd.org/${network}/snapshots.json"
 
-python3 - "$index" "$snapdir/latest" "$network" <<'PY'
-import json, pathlib, sys
-index, dest, network = sys.argv[1:]
+python3 - "$index" "$snapdir/latest" "$network" "$db_format" "$db_previous" <<'PY'
+import json, pathlib, re, sys
+index, dest, network, want, previous = sys.argv[1:]
+want = int(want)
+allowed = {want}
+if previous:
+    allowed.add(int(previous))
 rows = json.loads(pathlib.Path(index).read_text())
-latest = next((row for row in rows if "latest" in row.get("roles", [])), None)
-if latest is None:
-    raise SystemExit("no snapshot is marked latest")
-if latest.get("network") != network:
-    raise SystemExit(f"snapshot network {latest.get('network')} != {network}")
-major = latest.get("db_major")
-if major not in (28, 29):
-    raise SystemExit(f"snapshot database format {major} is not usable by this guest")
+compatible = [
+    row for row in rows
+    if row.get("network") == network and row.get("db_major") in allowed
+]
+if not compatible:
+    names = ", ".join(str(item) for item in sorted(allowed))
+    raise SystemExit(
+        f"no {network} snapshot uses database format {names}; not creating a Zebra disk"
+    )
+chosen = max(
+    compatible,
+    key=lambda row: (row.get("height") or 0, 1 if row.get("db_major") == want else 0),
+)
+name = chosen.get("filename")
+if not isinstance(name, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name) is None:
+    raise SystemExit("snapshot filename is not a single name")
 lines = [
-    f"filename={latest['filename']}",
-    f"url={latest['url']}",
-    f"sha256={latest['sha256']}",
-    f"height={latest['height']}",
-    f"db_major={major}",
-    f"size={latest.get('size', '')}",
+    f"filename={name}",
+    f"url={chosen['url']}",
+    f"sha256={chosen['sha256']}",
+    f"height={chosen['height']}",
+    f"db_major={chosen['db_major']}",
+    f"size={chosen.get('size', '')}",
 ]
 pathlib.Path(dest).write_text("\n".join(lines) + "\n")
 PY
 
 filename="$(grep '^filename=' "$snapdir/latest" | head -n 1)"
 filename="${filename#filename=}"
+require_snapshot_filename "$filename"
 url="$(grep '^url=' "$snapdir/latest" | head -n 1)"
 url="${url#url=}"
 sha256="$(grep '^sha256=' "$snapdir/latest" | head -n 1)"

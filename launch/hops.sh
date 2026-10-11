@@ -35,6 +35,15 @@ require_tag() {
   fi
 }
 
+# The snapshot index is downloaded. Its filename is used as a path by root.
+require_snapshot_filename() {
+  local name="$1"
+  if [[ ! "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+    echo "snapshot filename is not a single name" >&2
+    exit 1
+  fi
+}
+
 read_current() {
   local hops="$1" cur
   if [[ ! -f "$hops/current" ]]; then
@@ -51,6 +60,20 @@ write_current() {
   local hops="$1" tag="$2"
   printf '%s\n' "$tag" >"$hops/current.next"
   mv "$hops/current.next" "$hops/current"
+}
+
+# GitHub CLI state belongs to the user who invoked sudo. Root's login is a
+# different account and does not see that user's gh credentials.
+operator_gh() {
+  if ! command -v gh >/dev/null; then
+    echo "missing gh" >&2
+    exit 1
+  fi
+  if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+    sudo -u "$SUDO_USER" -- gh "$@"
+  else
+    gh "$@"
+  fi
 }
 
 # Sessions belong to the user who invoked sudo. Root's tmux is a different
@@ -78,13 +101,39 @@ console_line() {
   echo "$text"
 }
 
+# True when the pane in the session is the QEMU named zns-<tag>, or started it.
+qemu_in_session() {
+  local session="$1" tag="$2" pane pid cur hops=0
+  pane="$(operator_tmux display-message -p -t "$session" '#{pane_pid}' 2>/dev/null || true)"
+  [[ "$pane" =~ ^[0-9]+$ ]] || return 1
+  pid="$(pgrep -af qemu-system-x86_64 | grep -F -- "-name zns-${tag} -nographic" | head -n 1 || true)"
+  pid="${pid%% *}"
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  cur="$pid"
+  while [[ "$cur" =~ ^[0-9]+$ && "$cur" != "0" && "$cur" != "1" && "$hops" -lt 20 ]]; do
+    if [[ "$cur" == "$pane" ]]; then
+      return 0
+    fi
+    cur="$(ps -o ppid= -p "$cur" 2>/dev/null | tr -d '[:space:]' || true)"
+    hops=$((hops + 1))
+  done
+  return 1
+}
+
 # The live guest occupies zns-source. The guest being moved occupies
 # zns-target until receipt.bin, then takes that name. The previous guest
 # keeps running as zns-previous until its session is closed.
+# A missing zns-target is a finished rename only when that QEMU is already
+# the zns-source pane. Any other absence leaves current unchanged.
 claim_source_session() {
   local from="$1" to="$2" retired=0
   if ! operator_tmux has-session -t zns-target 2>/dev/null; then
-    return 0
+    if qemu_in_session zns-source "$to"; then
+      echo "target qemu is already in tmux session zns-source"
+      return 0
+    fi
+    echo "tmux session zns-target is missing; current stays ${from}." >&2
+    return 1
   fi
   if operator_tmux has-session -t zns-source 2>/dev/null; then
     if operator_tmux has-session -t zns-previous 2>/dev/null; then

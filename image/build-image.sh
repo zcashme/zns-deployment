@@ -321,6 +321,25 @@ if [[ "$zebra_pkg_version" != "$ZEBRA_VERSION" ]]; then
   echo "zebrad Cargo.toml version is ${zebra_pkg_version}, versions.toml says ${ZEBRA_VERSION}" >&2
   exit 1
 fi
+ZEBRA_DB_FORMAT="$(toml_get zebra_db_format)"
+zebra_db_format="$(sed -n 's/^const DATABASE_FORMAT_VERSION: u64 = \([0-9][0-9]*\);/\1/p' \
+  "$SRC/zebra/zebra-state/src/constants.rs" | head -n 1)"
+if [[ -z "$zebra_db_format" || "$zebra_db_format" != "$ZEBRA_DB_FORMAT" ]]; then
+  echo "zebra DATABASE_FORMAT_VERSION is ${zebra_db_format:-missing}; versions.toml zebra_db_format is ${ZEBRA_DB_FORMAT}" >&2
+  echo "that number is the state/v<number> directory this build opens" >&2
+  exit 1
+fi
+if ! grep -q 'let old_major_db_ver = major_db_ver - 1;' \
+  "$SRC/zebra/zebra-state/src/service/finalized_state/disk_db.rs"; then
+  echo "zebra no longer moves the previous state/v directory by subtracting one" >&2
+  exit 1
+fi
+previous="$(toml_get zebra_db_format_previous)"
+expected="$((zebra_db_format - 1))"
+if [[ "$previous" != "$expected" ]]; then
+  echo "zebra_db_format_previous is ${previous}; this zebra moves state/v${expected}" >&2
+  exit 1
+fi
 
 build_bin "$SRC/zns-mint" --bin zns-mint --features testnet
 build_bin "$SRC/zns-keygen" --bin zns-keygen --features testnet

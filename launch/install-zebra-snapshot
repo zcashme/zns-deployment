@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Put the latest Zebra snapshot on a new target disk.
+# Put a Zebra snapshot this guest can open on a new target disk.
 #
 #   sudo ./launch/install-zebra-snapshot v0.1.x
 #
@@ -47,16 +47,12 @@ fi
 snapdir="$hops/snapshots"
 filename="$(grep '^filename=' "$snapdir/latest" | head -n 1)"
 filename="${filename#filename=}"
+require_snapshot_filename "$filename"
 sha256="$(grep '^sha256=' "$snapdir/latest" | head -n 1)"
 sha256="${sha256#sha256=}"
 height="$(grep '^height=' "$snapdir/latest" | head -n 1)"
 height="${height#height=}"
 archive="$snapdir/$filename"
-got="$(sha256sum "$archive" | awk '{print $1}')"
-if [[ "$got" != "$sha256" ]]; then
-  echo "snapshot checksum does not match $snapdir/latest" >&2
-  exit 1
-fi
 
 mkdir -p "$hops/images/${tag}"
 partial="$img.partial"
@@ -75,8 +71,14 @@ truncate -s "$ZEBRA_IMG_SIZE" "$partial"
 mkfs.ext4 -q -F "$partial"
 mount -o loop "$partial" "$mnt"
 zstd -d -c "$archive" | tar -xf - -C "$mnt"
-if [[ ! -d "$mnt/state" ]]; then
-  echo "snapshot archive has no state directory" >&2
+db_major="$(grep '^db_major=' "$snapdir/latest" | head -n 1)"
+db_major="${db_major#db_major=}"
+network="$(grep -E '^network[[:space:]]*=' "$HERE/../versions.toml" | head -n 1 || true)"
+network="${network#*=}"
+network="${network//\"/}"
+network="${network//[[:space:]]/}"
+if [[ -z "$db_major" || -z "$network" || ! -d "$mnt/state/v${db_major}/${network}" ]]; then
+  echo "snapshot archive has no state/v${db_major}/${network}" >&2
   exit 1
 fi
 umount "$mnt"

@@ -16,6 +16,12 @@ canon_commit = "22a7579b39b9b7abdccb692f661b49d9b63632b3"
 zebra_repo = "https://github.com/ZcashFoundation/zebra.git"
 zebra_commit = "6d1e414d6f55e4180d0e47baaa934bf97d5b4fec"
 zebra_version = "7.0.0-rc.0"
+# DATABASE_FORMAT_VERSION in zebra-state. This build opens
+# state/v<zebra_db_format>/<network>.
+zebra_db_format = 29
+# This build also opens the previous major. On startup it moves
+# state/v<zebra_db_format_previous>/<network> to state/v<zebra_db_format>.
+zebra_db_format_previous = 28
 
 network = "testnet"
 

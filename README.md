@@ -25,7 +25,7 @@ Memory size, the state disks, host port forwards, and 9p mounts are launch setti
 | `launch/launch-guest.sh` | QEMU command |
 | `launch/launch-genesis` | First guest, upgrade and transport directories mounted |
 | `launch/fetch-release` | Download one tag's initrd and upgrade files |
-| `launch/fetch-zebra-snapshot` | Download the latest Zebra chain snapshot |
+| `launch/fetch-zebra-snapshot` | Download a Zebra snapshot this build can open |
 | `launch/install-zebra-snapshot` | Put that snapshot on a new target Zebra disk |
 | `launch/launch-target` | Boot the target guest against the live hop |
 | `launch/migrate` | Fetch the release, boot the target, publish the upgrade, record the tag after `receipt.bin` |
@@ -62,11 +62,11 @@ To move that guest to another release, open a second terminal and run the comman
 sudo ./launch/migrate v0.1.x
 ```
 
-Replace `v0.1.x` with the release you are moving to. An older tag is a rollback, and the command allows it. Run the command as shown. The disk variables from the first command belong only there; if they are still set, `migrate` exits before it starts. The new ZNS disk is an empty file under `/home/ubuntu/zns-hops/images/<new-tag>/`. The new Zebra disk is filled from the latest chain snapshot on [snapshots.zfnd.org](https://snapshots.zfnd.org/) when that file does not already exist. The live guest's disks are not copied. A file already in that directory is left unchanged. The download stays in `/home/ubuntu/zns-hops/snapshots/`. After the new guest's Zebra is syncing, that download can be deleted. The Zebra disk image stays.
+Replace `v0.1.x` with the release you are moving to. An older tag is a rollback, and the command allows it. Run the command as shown. The disk variables from the first command belong only there; if they are still set, `migrate` exits before it starts. The new ZNS disk is an empty file under `/home/ubuntu/zns-hops/images/<new-tag>/`. The new Zebra disk is filled from the newest chain snapshot on [snapshots.zfnd.org](https://snapshots.zfnd.org/) that this Zebra can open, when that file does not already exist. If none can, the command stops before creating the disk. The live guest's disks are not copied. A file already in that directory is left unchanged. The download stays in `/home/ubuntu/zns-hops/snapshots/`. After the new guest's Zebra is syncing, that download can be deleted. The Zebra disk image stays.
 
 Wait until the command prints `current is now v0.1.x`. That is the point at which the move has landed. The new guest's tmux session is then `zns-source`, and its console says so. The guest you started from is `zns-previous`. Its console says the new version is up and that this one can be retired.
 
-Pressing Ctrl-C while that command is still waiting stops only the wait. The new guest keeps running, in `zns-target`, and `current` stays on the old release. Run the same command again and it continues waiting. If it says `zns-previous` already exists, stop that guest, close the session, and run the same command again.
+Pressing Ctrl-C while that command is still waiting stops only the wait. The new guest keeps running, in `zns-target`, and `current` stays on the old release. Run the same command again and it continues waiting. If it says `zns-previous` already exists, stop that guest, close the session, and run the same command again. If it says `zns-target` is missing, `current` stays on the old release unless the new guest is already the `zns-source` session.
 
 Leave the new guest running. Attach to the old one with `tmux attach -t zns-previous`, then `Ctrl-a c`, then `quit`, when you are ready to stop it. Detach with `Ctrl-b d`. The next move is another `migrate` from a second terminal. Do not restart the live guest for that.
 
