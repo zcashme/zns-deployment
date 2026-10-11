@@ -8,7 +8,7 @@ keygen_repo = "https://github.com/zcashme/zns-keygen.git"
 keygen_commit = "5328856376e00f9f4078f99007e4a92cbbb283bd"
 
 migrate_repo = "https://github.com/zcashme/zns-migrate.git"
-migrate_commit = "2c2e1fc0b1bf7c3e02c8c8be47f48e4c4f3e1fc1"
+migrate_commit = "23c19afc2a010a97b76efbc947312709dacca56d"
 
 canon_repo = "https://github.com/zcashme/zns-canon.git"
 canon_commit = "22a7579b39b9b7abdccb692f661b49d9b63632b3"
