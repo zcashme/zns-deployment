@@ -149,8 +149,7 @@ assets_ready() {
   done
 }
 
-if assets_ready; then
-  verify_release "$release_dir"
+if assets_ready && ( verify_release "$release_dir" ); then
   echo "release files already in $release_dir"
   exit 0
 fi
@@ -163,7 +162,8 @@ fi
 operator_gh release download "$tag" -R "$ZNS_REPO" \
   -p upgrade.toml -p upgrade.bin -p zns-initrd.img -D "$tmp"
 verify_release "$tmp"
-cp "$tmp/zns-initrd.img" "$release_dir/zns-initrd.img"
+cp "$tmp/zns-initrd.img" "$release_dir/zns-initrd.img.partial"
+mv "$release_dir/zns-initrd.img.partial" "$release_dir/zns-initrd.img"
 cp "$tmp/upgrade.toml" "$release_dir/upgrade.toml"
 cp "$tmp/upgrade.bundle.jsonl" "$release_dir/upgrade.bundle.jsonl.partial"
 mv "$release_dir/upgrade.bundle.jsonl.partial" "$release_dir/upgrade.bundle.jsonl"
