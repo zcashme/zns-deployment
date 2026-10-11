@@ -1,0 +1,174 @@
+#!/usr/bin/env bash
+# Download one release into the hops directory and verify it before accepting.
+#
+#   sudo ./launch/fetch-release v0.1.x
+#
+# Writes the initrd, upgrade.toml, upgrade.bin, and the attestation bundle
+# under $ZNS_HOPS/images/<tag>/release/. Does not boot a guest and does not
+# publish those files into a live upgrade directory.
+#
+# upgrade.bin must be attested by this repo's release workflow on that tag.
+# upgrade.toml must be the same document. zns-initrd.img must match its
+# artifact_hash. Files already on disk are checked the same way.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=hops.sh
+source "$HERE/hops.sh"
+
+ZNS_REPO="${ZNS_REPO:-zcashme/zns-deployment}"
+SIGNER_WORKFLOW=".github/workflows/release.yml"
+
+if [[ "$#" -ne 1 ]]; then
+  echo "usage: fetch-release <v*-tag>" >&2
+  exit 1
+fi
+
+tag="$1"
+require_tag "$tag"
+require_root
+
+for cmd in gh python3; do
+  if ! command -v "$cmd" >/dev/null; then
+    echo "missing $cmd" >&2
+    exit 1
+  fi
+done
+if ! operator_gh attestation verify --help >/dev/null 2>&1; then
+  echo "gh attestation verify is required" >&2
+  exit 1
+fi
+
+hops="$(hops_root)"
+release_dir="$hops/images/${tag}/release"
+mkdir -p "$release_dir"
+
+verify_release() {
+  local dir="$1" bin toml initrd verified identity
+  bin="$dir/upgrade.bin"
+  toml="$dir/upgrade.toml"
+  initrd="$dir/zns-initrd.img"
+  for path in "$bin" "$toml" "$initrd"; do
+    if [[ -L "$path" || ! -f "$path" ]]; then
+      echo "missing release file $path" >&2
+      exit 1
+    fi
+  done
+  identity="https://github.com/${ZNS_REPO}/${SIGNER_WORKFLOW}@refs/tags/${tag}"
+  if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+    chmod a+rx "$dir"
+    chmod a+r "$bin" "$toml" "$initrd"
+  fi
+  verified="$(mktemp)"
+  operator_gh attestation verify "$bin" \
+    --repo "$ZNS_REPO" \
+    --source-ref "refs/tags/${tag}" \
+    --cert-identity "$identity" \
+    --format json >"$verified"
+  python3 - "$dir" "$tag" "$verified" "$dir/upgrade.bundle.jsonl" <<'PY'
+import hashlib, json, pathlib, struct, sys, tomllib
+
+directory, tag, verified_path, bundle_path = sys.argv[1:]
+root = pathlib.Path(directory)
+blob = (root / "upgrade.bin").read_bytes()
+initrd = (root / "zns-initrd.img").read_bytes()
+file = tomllib.loads((root / "upgrade.toml").read_text())
+keys = {
+    "version",
+    "sequence",
+    "from_measurement",
+    "to_measurement",
+    "from_guest_policy",
+    "to_guest_policy",
+    "seed_fingerprint",
+    "source_capsule_hash",
+    "artifact_hash",
+    "release",
+}
+if set(file) != keys:
+    raise SystemExit("upgrade.toml fields do not match the upgrade document")
+if file["version"] != 1:
+    raise SystemExit("upgrade.toml version is not 1")
+if type(file["sequence"]) is not int or file["sequence"] < 0:
+    raise SystemExit("upgrade.toml sequence is not an integer")
+
+def hex_field(name, size):
+    raw = str(file[name]).strip().removeprefix("0x")
+    try:
+        data = bytes.fromhex(raw)
+    except ValueError:
+        raise SystemExit(f"upgrade.toml {name} is not hex")
+    if len(data) != size or not any(data):
+        raise SystemExit(f"upgrade.toml {name} must be {size} nonzero bytes")
+    return data
+
+def policy(name):
+    value = file[name]
+    if type(value) is not int or value <= 0:
+        raise SystemExit(f"upgrade.toml {name} must be a nonzero integer")
+    return value
+
+release = file["release"]
+if release != tag:
+    raise SystemExit(f"upgrade document release is {release}, expected {tag}")
+body = bytearray()
+body += struct.pack("<I", 1)
+body += struct.pack("<Q", file["sequence"])
+body += hex_field("from_measurement", 48)
+body += hex_field("to_measurement", 48)
+body += struct.pack("<Q", policy("from_guest_policy"))
+body += struct.pack("<Q", policy("to_guest_policy"))
+body += hex_field("seed_fingerprint", 32)
+body += hex_field("source_capsule_hash", 32)
+artifact = hex_field("artifact_hash", 32)
+body += artifact
+encoded = release.encode()
+body += struct.pack("<I", len(encoded))
+body += encoded
+if bytes(body) != blob:
+    raise SystemExit("upgrade.toml does not match the attested upgrade.bin")
+digest = hashlib.sha256(initrd).digest()
+if digest != artifact:
+    raise SystemExit("zns-initrd.img does not match the attested artifact_hash")
+verified = json.loads(pathlib.Path(verified_path).read_text())
+if len(verified) != 1 or "attestation" not in verified[0]:
+    raise SystemExit("gh attestation verify did not return the signed bundle")
+bundle = verified[0]["attestation"]["bundle"]
+path = pathlib.Path(bundle_path)
+path.write_text(json.dumps(bundle, separators=(",", ":")) + "\n")
+PY
+  rm -f "$verified"
+}
+
+assets_ready() {
+  local path
+  for path in "$release_dir/upgrade.bin" "$release_dir/upgrade.toml" "$release_dir/zns-initrd.img"; do
+    if [[ -L "$path" || ! -s "$path" ]]; then
+      return 1
+    fi
+  done
+}
+
+if assets_ready && ( verify_release "$release_dir" ); then
+  echo "release files already in $release_dir"
+  exit 0
+fi
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+  chown "$SUDO_USER" "$tmp"
+fi
+operator_gh release download "$tag" -R "$ZNS_REPO" \
+  -p upgrade.toml -p upgrade.bin -p zns-initrd.img -D "$tmp"
+verify_release "$tmp"
+cp "$tmp/zns-initrd.img" "$release_dir/zns-initrd.img.partial"
+mv "$release_dir/zns-initrd.img.partial" "$release_dir/zns-initrd.img"
+cp "$tmp/upgrade.toml" "$release_dir/upgrade.toml"
+cp "$tmp/upgrade.bundle.jsonl" "$release_dir/upgrade.bundle.jsonl.partial"
+mv "$release_dir/upgrade.bundle.jsonl.partial" "$release_dir/upgrade.bundle.jsonl"
+cp "$tmp/upgrade.bin" "$release_dir/upgrade.bin.partial"
+mv "$release_dir/upgrade.bin.partial" "$release_dir/upgrade.bin"
+trap - EXIT
+rm -rf "$tmp"
+echo "fetched $tag into $release_dir"

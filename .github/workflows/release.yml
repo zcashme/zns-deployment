@@ -86,6 +86,8 @@ jobs:
           key: guest-downloads-${{ hashFiles('versions.toml') }}
 
       - name: Build guest image
+        env:
+          ZNS_RELEASE: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
         run: ./image/build-image.sh
 
       - name: sccache stats

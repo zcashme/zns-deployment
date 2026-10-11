@@ -234,10 +234,15 @@ vmlinuz_out.write_bytes(data)
 
 modules_root = unpack(fetch(modules_rel, modules_sha, "linux-modules.deb"), "modules")
 moddir = stage / "usr/lib/modules" / version
-# Inserted by the init script with kmod insmod, in this order.
+# Inserted by the init script with kmod insmod. The sev modules load first.
+# netfs, 9pnet, 9p, and 9pnet_virtio then serve the upgrade and transport mounts.
 for rel in (
     "kernel/drivers/virt/coco/guest/tsm_report.ko.zst",
     "kernel/drivers/virt/coco/sev-guest/sev-guest.ko.zst",
+    "kernel/fs/netfs/netfs.ko.zst",
+    "kernel/net/9p/9pnet.ko.zst",
+    "kernel/fs/9p/9p.ko.zst",
+    "kernel/net/9p/9pnet_virtio.ko.zst",
 ):
     src = modules_root / "usr/lib/modules" / version / rel
     if not src.is_file():
@@ -316,6 +321,25 @@ if [[ "$zebra_pkg_version" != "$ZEBRA_VERSION" ]]; then
   echo "zebrad Cargo.toml version is ${zebra_pkg_version}, versions.toml says ${ZEBRA_VERSION}" >&2
   exit 1
 fi
+ZEBRA_DB_FORMAT="$(toml_get zebra_db_format)"
+zebra_db_format="$(sed -n 's/^const DATABASE_FORMAT_VERSION: u64 = \([0-9][0-9]*\);/\1/p' \
+  "$SRC/zebra/zebra-state/src/constants.rs" | head -n 1)"
+if [[ -z "$zebra_db_format" || "$zebra_db_format" != "$ZEBRA_DB_FORMAT" ]]; then
+  echo "zebra DATABASE_FORMAT_VERSION is ${zebra_db_format:-missing}; versions.toml zebra_db_format is ${ZEBRA_DB_FORMAT}" >&2
+  echo "that number is the state/v<number> directory this build opens" >&2
+  exit 1
+fi
+if ! grep -q 'let old_major_db_ver = major_db_ver - 1;' \
+  "$SRC/zebra/zebra-state/src/service/finalized_state/disk_db.rs"; then
+  echo "zebra no longer moves the previous state/v directory by subtracting one" >&2
+  exit 1
+fi
+previous="$(toml_get zebra_db_format_previous)"
+expected="$((zebra_db_format - 1))"
+if [[ "$previous" != "$expected" ]]; then
+  echo "zebra_db_format_previous is ${previous}; this zebra moves state/v${expected}" >&2
+  exit 1
+fi
 
 build_bin "$SRC/zns-mint" --bin zns-mint --features testnet
 build_bin "$SRC/zns-keygen" --bin zns-keygen --features testnet
@@ -354,6 +378,16 @@ python3 "$ROOT/image/install-guest.py" \
   --bin "$STAGE/usr/local/bin/zebrad"
 ln -sf kmod "$STAGE/usr/bin/insmod"
 install -m 0644 "$ROOT/image/configs/zebrad.toml" "$STAGE/etc/zebra/zebrad.toml"
+# One line, the release tag. The guest prints it on the serial console.
+# A release build sets ZNS_RELEASE. A checkout that is itself a tag uses that.
+release="${ZNS_RELEASE:-}"
+if [[ -z "$release" ]]; then
+  release="$(git -C "$ROOT" describe --tags --exact-match 2>/dev/null || true)"
+fi
+printf '%s\n' "$release" >"$STAGE/etc/zns-release"
+if [[ -z "$release" ]]; then
+  echo "no release tag; the guest will not name a release on the console" >&2
+fi
 install -m 0755 "$ROOT/image/initramfs/scripts/init-premount/zns-testnet" \
   "$STAGE/scripts/init-premount/zns-testnet"
 

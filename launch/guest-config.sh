@@ -5,7 +5,8 @@
 # model and stepping, guest features, OVMF, kernel, initrd, and command line.
 # Guest policy, KERNEL_HASHES, machine type, memory, CBITPOS, REDUCED_PHYS_BITS, and
 # the -cpu setting are checked or printed here but are not passed to the tool. The
-# policy is reported beside the digest instead. State disk paths affect only launch.
+# policy is reported beside the digest instead. State disk paths, host forwards,
+# and 9p directory mounts affect only launch.
 # All three scripts read this file so the measurement and the launch use the same values.
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

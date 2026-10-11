@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# Put a Zebra snapshot this guest can open on a new target disk.
+#
+#   sudo ./launch/install-zebra-snapshot v0.1.x
+#
+# Creates $ZNS_HOPS/images/<tag>/zebra-state.img only when that file is
+# absent, and extracts the snapshot into it. An existing image is left
+# unchanged. The ZNS disk is not touched.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=hops.sh
+source "$HERE/hops.sh"
+
+ZEBRA_IMG_SIZE="${ZEBRA_IMG_SIZE:-350G}"
+
+if [[ "$#" -ne 1 ]]; then
+  echo "usage: install-zebra-snapshot <v*-tag>" >&2
+  exit 1
+fi
+
+tag="$1"
+require_tag "$tag"
+refuse_state_disk_overrides
+require_root
+
+for cmd in truncate mkfs.ext4 zstd tar; do
+  if ! command -v "$cmd" >/dev/null; then
+    echo "missing $cmd" >&2
+    exit 1
+  fi
+done
+
+hops="$(hops_root)"
+img="$hops/images/${tag}/zebra-state.img"
+if [[ -L "$img" ]]; then
+  echo "$img is a symlink; refusing to use it" >&2
+  exit 1
+fi
+if [[ -e "$img" ]]; then
+  echo "keeping $img"
+  exit 0
+fi
+
+"$HERE/fetch-zebra-snapshot"
+
+snapdir="$hops/snapshots"
+filename="$(grep '^filename=' "$snapdir/latest" | head -n 1)"
+filename="${filename#filename=}"
+require_snapshot_filename "$filename"
+sha256="$(grep '^sha256=' "$snapdir/latest" | head -n 1)"
+sha256="${sha256#sha256=}"
+height="$(grep '^height=' "$snapdir/latest" | head -n 1)"
+height="${height#height=}"
+archive="$snapdir/$filename"
+
+mkdir -p "$hops/images/${tag}"
+partial="$img.partial"
+mnt="$(mktemp -d)"
+cleanup() {
+  if grep -q " ${mnt} " /proc/mounts; then
+    umount "$mnt" || true
+  fi
+  rm -rf "$mnt"
+  rm -f "$partial"
+}
+trap cleanup EXIT
+
+echo "creating $img ($ZEBRA_IMG_SIZE) from $filename"
+truncate -s "$ZEBRA_IMG_SIZE" "$partial"
+mkfs.ext4 -q -F "$partial"
+mount -o loop "$partial" "$mnt"
+zstd -d -c "$archive" | tar -xf - -C "$mnt"
+db_major="$(grep '^db_major=' "$snapdir/latest" | head -n 1)"
+db_major="${db_major#db_major=}"
+network="$(grep -E '^network[[:space:]]*=' "$HERE/../versions.toml" | head -n 1 || true)"
+network="${network#*=}"
+network="${network//\"/}"
+network="${network//[[:space:]]/}"
+if [[ -z "$db_major" || -z "$network" || ! -d "$mnt/state/v${db_major}/${network}" ]]; then
+  echo "snapshot archive has no state/v${db_major}/${network}" >&2
+  exit 1
+fi
+umount "$mnt"
+trap - EXIT
+rm -rf "$mnt"
+if [[ -e "$img" ]]; then
+  rm -f "$partial"
+  echo "$img appeared while the snapshot was extracted" >&2
+  exit 1
+fi
+mv "$partial" "$img"
+printf 'filename=%s\nheight=%s\nsha256=%s\n' "$filename" "$height" "$sha256" >"$hops/images/${tag}/zebra-state.snapshot"
+echo "zebra disk: $img"
