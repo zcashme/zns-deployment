@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# Boot the first guest.
+#
+#   sudo ZNS_STATE_IMG=/path/zns.img ZEBRA_STATE_IMG=/path/zebra.img \
+#     ./launch/launch-genesis v0.1.x
+#
+# Creates $ZNS_HOPS/upgrade-from-<tag> and transport-from-<tag>, records the
+# tag in $ZNS_HOPS/current, and starts QEMU in the foreground. The state
+# images must already exist. This command does not create or truncate them.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=hops.sh
+source "$HERE/hops.sh"
+
+if [[ "$#" -ne 1 ]]; then
+  echo "usage: launch-genesis <v*-tag>" >&2
+  exit 1
+fi
+
+version="$1"
+require_tag "$version"
+require_root
+
+if [[ -z "${ZNS_STATE_IMG:-}" || -z "${ZEBRA_STATE_IMG:-}" ]]; then
+  echo "set ZNS_STATE_IMG and ZEBRA_STATE_IMG to the existing state images" >&2
+  exit 1
+fi
+if [[ ! -f "$ZNS_STATE_IMG" || ! -f "$ZEBRA_STATE_IMG" ]]; then
+  echo "ZNS_STATE_IMG and ZEBRA_STATE_IMG must already exist" >&2
+  exit 1
+fi
+
+hops="$(hops_root)"
+mkdir -p "$hops/upgrade-from-${version}" "$hops/transport-from-${version}"
+
+if [[ -f "$hops/current" ]]; then
+  existing="$(read_current "$hops")"
+  if [[ "$existing" != "$version" ]]; then
+    echo "current is $existing; run migrate to move to another tag" >&2
+    exit 1
+  fi
+else
+  write_current "$hops" "$version"
+fi
+
+name="zns-${version}"
+if pgrep -af qemu-system-x86_64 | grep -F -- "-name ${name} -nographic" >/dev/null; then
+  echo "$name is already running" >&2
+  exit 1
+fi
+
+echo "current: $version"
+echo "upgrade: $hops/upgrade-from-${version}"
+echo "transport: $hops/transport-from-${version}"
+echo "zns state: $ZNS_STATE_IMG"
+echo "zebra state: $ZEBRA_STATE_IMG"
+
+export ZNS_9P="upgrade|${hops}/upgrade-from-${version}|ro;transport|${hops}/transport-from-${version}|rw"
+export ZNS_QEMU_NAME="$name"
+exec "$HERE/launch-guest.sh"

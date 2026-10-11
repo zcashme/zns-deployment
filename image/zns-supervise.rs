@@ -3,7 +3,8 @@
 //! Restart a process that has exited. After Zebra has passed /ready, or mint
 //! has passed /metrics, restart that process once three checks fail. Leave
 //! Zebra alone during its first sync. Start mint only while Zebra's /ready
-//! check is succeeding and the ceremony is complete.
+//! check is succeeding and the ceremony is complete. A migrate-source.hold
+//! file keeps mint stopped while a source migration is running or has finished.
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -26,6 +27,7 @@ const LOGS: &[&str] = &[
     "/state/log/metrics.log",
     "/state/log/supervisor.log",
     "/state/log/keygen.log",
+    "/state/log/migrate.log",
 ];
 const WNOHANG: i32 = 1;
 const SIGTERM: i32 = 15;
@@ -34,6 +36,7 @@ const SIGKILL: i32 = 9;
 const ZEBRA: &str = "/usr/local/bin/zebrad";
 const MINT: &str = "/usr/local/bin/zns-mint";
 const FORWARD: &str = "/usr/local/bin/zns-forward";
+const MIGRATE_HOLD: &str = "/state/migrate-source.hold";
 
 extern "C" {
     fn kill(pid: i32, sig: i32) -> i32;
@@ -252,6 +255,10 @@ fn ceremony_complete() -> bool {
     text.lines().any(|line| line == "state = \"COMPLETE\"")
 }
 
+fn migration_holds_mint() -> bool {
+    std::fs::metadata(MIGRATE_HOLD).is_ok()
+}
+
 fn ensure_forward() {
     if living_pid(FORWARD).is_some() {
         return;
@@ -262,6 +269,15 @@ fn ensure_forward() {
 
 impl Watch {
     fn ensure_mint(&mut self) {
+        if migration_holds_mint() {
+            if let Some(pid) = living_pid(MINT) {
+                log_msg("migration hold, stopping mint");
+                stop_pid(pid);
+                self.mint_ready = false;
+                self.mint_misses = 0;
+            }
+            return;
+        }
         if !self.zebra_ready_now || !ceremony_complete() {
             return;
         }

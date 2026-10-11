@@ -234,10 +234,15 @@ vmlinuz_out.write_bytes(data)
 
 modules_root = unpack(fetch(modules_rel, modules_sha, "linux-modules.deb"), "modules")
 moddir = stage / "usr/lib/modules" / version
-# Inserted by the init script with kmod insmod, in this order.
+# Inserted by the init script with kmod insmod. The sev modules load first.
+# netfs, 9pnet, 9p, and 9pnet_virtio then serve the upgrade and transport mounts.
 for rel in (
     "kernel/drivers/virt/coco/guest/tsm_report.ko.zst",
     "kernel/drivers/virt/coco/sev-guest/sev-guest.ko.zst",
+    "kernel/fs/netfs/netfs.ko.zst",
+    "kernel/net/9p/9pnet.ko.zst",
+    "kernel/fs/9p/9p.ko.zst",
+    "kernel/net/9p/9pnet_virtio.ko.zst",
 ):
     src = modules_root / "usr/lib/modules" / version / rel
     if not src.is_file():
@@ -354,6 +359,16 @@ python3 "$ROOT/image/install-guest.py" \
   --bin "$STAGE/usr/local/bin/zebrad"
 ln -sf kmod "$STAGE/usr/bin/insmod"
 install -m 0644 "$ROOT/image/configs/zebrad.toml" "$STAGE/etc/zebra/zebrad.toml"
+# One line, the release tag. The guest prints it on the serial console.
+# A release build sets ZNS_RELEASE. A checkout that is itself a tag uses that.
+release="${ZNS_RELEASE:-}"
+if [[ -z "$release" ]]; then
+  release="$(git -C "$ROOT" describe --tags --exact-match 2>/dev/null || true)"
+fi
+printf '%s\n' "$release" >"$STAGE/etc/zns-release"
+if [[ -z "$release" ]]; then
+  echo "no release tag; the guest will not name a release on the console" >&2
+fi
 install -m 0755 "$ROOT/image/initramfs/scripts/init-premount/zns-testnet" \
   "$STAGE/scripts/init-premount/zns-testnet"
 

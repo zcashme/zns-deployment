@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Download one release into the hops directory.
+#
+#   sudo ./launch/fetch-release v0.1.x
+#
+# Writes the initrd, upgrade.toml, upgrade.bin, and the attestation bundle
+# under $ZNS_HOPS/images/<tag>/release/. Does not boot a guest and does not
+# publish those files into a live upgrade directory.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=hops.sh
+source "$HERE/hops.sh"
+
+ZNS_REPO="${ZNS_REPO:-zcashme/zns-deployment}"
+
+if [[ "$#" -ne 1 ]]; then
+  echo "usage: fetch-release <v*-tag>" >&2
+  exit 1
+fi
+
+tag="$1"
+require_tag "$tag"
+require_root
+
+for cmd in gh python3 sha256sum; do
+  if ! command -v "$cmd" >/dev/null; then
+    echo "missing $cmd" >&2
+    exit 1
+  fi
+done
+
+hops="$(hops_root)"
+release_dir="$hops/images/${tag}/release"
+initrd="$release_dir/zns-initrd.img"
+mkdir -p "$release_dir"
+
+if [[ -s "$initrd" && -f "$release_dir/upgrade.toml" && -s "$release_dir/upgrade.bin" && -f "$release_dir/upgrade.bundle.jsonl" ]]; then
+  echo "release files already in $release_dir"
+  exit 0
+fi
+
+tmp="$(mktemp -d)"
+gh release download "$tag" -R "$ZNS_REPO" \
+  -p upgrade.toml -p upgrade.bin -p zns-initrd.img -D "$tmp"
+digest="$(sha256sum "$tmp/upgrade.bin" | awk '{print $1}')"
+gh api "/repos/${ZNS_REPO}/attestations/sha256:${digest}" >"$tmp/attestations.json"
+python3 -c '
+import json, pathlib, sys
+data = json.loads(pathlib.Path(sys.argv[1]).read_text())
+atts = data.get("attestations") or []
+if not atts:
+    raise SystemExit("no attestation for this upgrade.bin")
+bundle = atts[0]["bundle"]
+pathlib.Path(sys.argv[2]).write_text(json.dumps(bundle) + "\n")
+' "$tmp/attestations.json" "$tmp/upgrade.bundle.jsonl"
+cp "$tmp/zns-initrd.img" "$initrd"
+cp "$tmp/upgrade.toml" "$release_dir/upgrade.toml"
+cp "$tmp/upgrade.bundle.jsonl" "$release_dir/upgrade.bundle.jsonl"
+cp "$tmp/upgrade.bin" "$release_dir/upgrade.bin.partial"
+mv "$release_dir/upgrade.bin.partial" "$release_dir/upgrade.bin"
+rm -rf "$tmp"
+echo "fetched $tag into $release_dir"

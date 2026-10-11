@@ -3,6 +3,8 @@
 # Mount the two state disks, get an address by DHCP, then run the ceremony.
 # zns-supervise keeps Zebra, mint, and the metrics forwarder running.
 # Logs live under /state/log and stay on the state disk across a QEMU restart.
+# 9p tags upgrade and transport are the live hop. upgrade-next means this boot
+# is a migration target; it does not run keygen.
 set -eu
 
 ZEBRA_CONFIG="/etc/zebra/zebrad.toml"
@@ -184,7 +186,239 @@ start_keygen() {
   KEYGEN_PID=$!
 }
 
+load_9p() {
+  kver="$(uname -r)"
+  base="/lib/modules/$kver"
+  /usr/bin/insmod "$base/kernel/fs/netfs/netfs.ko.zst" || fatal "failed to load netfs"
+  /usr/bin/insmod "$base/kernel/net/9p/9pnet.ko.zst" || fatal "failed to load 9pnet"
+  /usr/bin/insmod "$base/kernel/fs/9p/9p.ko.zst" || fatal "failed to load 9p"
+  /usr/bin/insmod "$base/kernel/net/9p/9pnet_virtio.ko.zst" || fatal "failed to load 9pnet_virtio"
+  sleep 1 || fatal "sleep failed"
+}
+
+mount_one_9p() {
+  tag="$1"
+  dest="$2"
+  mode="$3"
+  mkdir -p "$dest" || fatal "could not create $dest"
+  opts="trans=virtio,version=9p2000.L,cache=none"
+  if [ "$mode" = "ro" ]; then
+    opts="$opts,ro"
+  fi
+  mount -t 9p -o "$opts" "$tag" "$dest" || fatal "could not mount $tag on $dest"
+  log "mounted $tag on $dest"
+}
+
+mount_9p() {
+  load_9p
+  for dev in /sys/bus/virtio/devices/virtio*; do
+    [ -e "$dev/mount_tag" ] || continue
+    tag=""
+    IFS= read -r tag <"$dev/mount_tag" || true
+    while [ "${tag# }" != "$tag" ]; do
+      tag="${tag# }"
+    done
+    while [ "${tag% }" != "$tag" ]; do
+      tag="${tag% }"
+    done
+    case "$tag" in
+      upgrade) mount_one_9p "$tag" /upgrade ro ;;
+      transport) mount_one_9p "$tag" /migration rw ;;
+      upgrade-next) mount_one_9p "$tag" /upgrade-next ro ;;
+      transport-next) mount_one_9p "$tag" /migration-next rw ;;
+    esac
+  done
+}
+
+channel_has() {
+  dir="$1"
+  shift
+  name=""
+  for name in "$@"; do
+    if [ -e "$dir/$name" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+upgrade_ready() {
+  dir="$1"
+  [ -f "$dir/upgrade.toml" ] && [ -f "$dir/upgrade.bin" ] && [ -f "$dir/upgrade.bundle.jsonl" ]
+}
+
+artifact_line() {
+  grep '^artifact_hash ' "$1/upgrade.toml" 2>/dev/null || true
+}
+
+ceremony_complete() {
+  [ -f "$STATE_DIR/keys/ceremony_state.toml" ] || return 1
+  grep -qx 'state = "COMPLETE"' "$STATE_DIR/keys/ceremony_state.toml"
+}
+
+source_allowed() {
+  [ -f "$STATE_DIR/keys/zns_seed.capsule" ] || return 1
+  if ceremony_complete; then
+    return 0
+  fi
+  [ -f "$STATE_DIR/migrate-target.done" ]
+}
+
+already_done() {
+  line="$1"
+  [ -n "$line" ] || return 1
+  [ -f "$STATE_DIR/migrate-source.done" ] || return 1
+  done_line=""
+  IFS= read -r done_line <"$STATE_DIR/migrate-source.done" || true
+  [ "$done_line" = "$line" ]
+}
+
+# Identity of an upgrade is artifact_hash. sequence is not compared, so a
+# rollback document is a different hash and is allowed to run.
+watch_target() {
+  if [ "$target_wait" -eq 1 ]; then
+    if channel_has /migration offer.bin attestation.bin encrypted_seed.bin \
+      source_attestation.bin receipt.bin receipt_attestation.bin; then
+      return
+    fi
+    target_wait=0
+    log "migration transport is empty; target can try again"
+  fi
+  upgrade_ready /upgrade || return
+  artifact="$(artifact_line /upgrade)"
+  [ -n "$artifact" ] || return
+  if channel_has /migration offer.bin attestation.bin encrypted_seed.bin \
+    source_attestation.bin receipt.bin receipt_attestation.bin; then
+    log "migration transport is not empty; target is waiting for it to be cleared"
+    target_wait=1
+    return
+  fi
+  mkdir -p "$STATE_DIR/keys" || return
+  log "running zns-migrate target"
+  /usr/local/bin/zns-migrate target \
+    --manifest /upgrade/upgrade.toml \
+    --upgrade-document /upgrade/upgrade.bin \
+    --attestation-bundle /upgrade/upgrade.bundle.jsonl \
+    --transport-dir /migration \
+    --output-capsule "$STATE_DIR/keys/zns_seed.capsule" \
+    --timeout-secs 86400 >>"$STATE_DIR/log/migrate.log" 2>&1
+  status=$?
+  if [ "$status" -eq 0 ]; then
+    printf '%s\n' "$artifact" >"$STATE_DIR/migrate-target.done" || true
+    log "migration target finished"
+    return
+  fi
+  log "migration target failed ($status); waiting for an empty transport directory"
+  target_wait=1
+}
+
+watch_source() {
+  if grep -q ' /upgrade-next ' /proc/mounts; then
+    sup=/upgrade-next
+    strn=/migration-next
+  else
+    sup=/upgrade
+    strn=/migration
+  fi
+  if [ "$source_wait" -eq 1 ]; then
+    if channel_has "$strn" source.ready offer.bin attestation.bin encrypted_seed.bin \
+      source_attestation.bin receipt.bin receipt_attestation.bin; then
+      return
+    fi
+    source_wait=0
+    log "migration transport is empty; source can try again"
+  fi
+  if ! source_allowed; then
+    if upgrade_ready "$sup" && [ "$told_ceremony" -eq 0 ]; then
+      log "migration source waiting until this guest can hand off the capsule"
+      told_ceremony=1
+    fi
+    return
+  fi
+  upgrade_ready "$sup" || return
+  artifact="$(artifact_line "$sup")"
+  [ -n "$artifact" ] || return
+  if already_done "$artifact"; then
+    return
+  fi
+  if channel_has "$strn" source.ready offer.bin attestation.bin encrypted_seed.bin \
+    source_attestation.bin receipt.bin receipt_attestation.bin; then
+    log "migration transport is not empty; source is waiting for it to be cleared"
+    source_wait=1
+    return
+  fi
+  printf 'hold\n' >"$STATE_DIR/migrate-source.hold" || return
+  # The supervisor checks the hold file every 30s. Wait out one pass so mint
+  # is stopped before the capsule is read.
+  sleep 31 || return
+  if pidof zns-mint >/dev/null 2>&1; then
+    log "mint still running; migration will wait"
+    return
+  fi
+  log "running zns-migrate source"
+  /usr/local/bin/zns-migrate source \
+    --manifest "$sup/upgrade.toml" \
+    --upgrade-document "$sup/upgrade.bin" \
+    --attestation-bundle "$sup/upgrade.bundle.jsonl" \
+    --transport-dir "$strn" \
+    --input-capsule "$STATE_DIR/keys/zns_seed.capsule" \
+    --timeout-secs 86400 >>"$STATE_DIR/log/migrate.log" 2>&1
+  status=$?
+  if [ "$status" -eq 0 ]; then
+    printf '%s\n' "$artifact" >"$STATE_DIR/migrate-source.done.new" || return
+    mv "$STATE_DIR/migrate-source.done.new" "$STATE_DIR/migrate-source.done" || return
+    log "migration source finished"
+    return
+  fi
+  rm -f "$STATE_DIR/migrate-source.hold" || true
+  log "migration source failed ($status); waiting for an empty transport directory"
+  source_wait=1
+}
+
+migrate_watch() {
+  if ! grep -q ' /upgrade ' /proc/mounts; then
+    log "no upgrade mount; migration watch idle"
+    return
+  fi
+  log "migration watch started"
+  source_wait=0
+  target_wait=0
+  told_ceremony=0
+  while true; do
+    if grep -q ' /upgrade-next ' /proc/mounts && [ ! -f "$STATE_DIR/keys/zns_seed.capsule" ]; then
+      watch_target || true
+    else
+      watch_source || true
+    fi
+    sleep 5 || true
+  done
+}
+
+release_notice() {
+  rel=""
+  if [ ! -s /etc/zns-release ]; then
+    return
+  fi
+  read -r rel </etc/zns-release || return
+  if [ -z "$rel" ]; then
+    return
+  fi
+  while true; do
+    echo "You are running the ${rel} release of the ZNS protocol"
+    sleep 600 || return
+  done
+}
+
+mount_9p
 start_supervisor
+(
+  set +e
+  migrate_watch
+) &
+(
+  set +e
+  release_notice
+) &
 
 log "waiting for Zebra readiness on http://127.0.0.1:8080/ready"
 attempt=0
@@ -213,6 +447,19 @@ log "Zebra is ready"
 cd "$STATE_DIR" || fatal "could not enter $STATE_DIR"
 KEYGEN_EXIT="$STATE_DIR/log/keygen.exit"
 
+if grep -q ' /upgrade-next ' /proc/mounts; then
+  log "migration target: not running keygen"
+  target_ticks=0
+  while [ ! -f "$STATE_DIR/migrate-target.done" ] && [ ! -f "$STATE_DIR/keys/zns_seed.capsule" ]; do
+    target_ticks=$((target_ticks + 1))
+    if [ $((target_ticks % 12)) -eq 0 ]; then
+      log "waiting for migration"
+    fi
+    watch_supervisor
+    sleep 5 || fatal "sleep failed"
+  done
+  log "migration target has the capsule"
+else
 log "running keygen"
 log "keygen output is in $STATE_DIR/log/keygen.log"
 start_keygen
@@ -257,6 +504,7 @@ while true; do
   sleep 5 || fatal "sleep failed"
 done
 log "ceremony complete"
+fi
 
 log "supervisor pid $SUP_PID"
 log "guest logs are in $STATE_DIR/log"

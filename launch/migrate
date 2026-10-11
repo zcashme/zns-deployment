@@ -1,0 +1,170 @@
+#!/usr/bin/env bash
+# Publish an upgrade to the live guest and record the new tag after it lands.
+#
+#   sudo ./launch/migrate v0.1.x
+#
+# The live guest is already running from launch-genesis. This command fetches
+# the named release, boots the target against that guest's hop directories,
+# and copies upgrade.toml, upgrade.bin, and the attestation bundle into the
+# upgrade directory the source is scanning. current changes to the new tag
+# only after receipt.bin appears.
+#
+# The new tag is not checked against the old one. A lower tag is a rollback.
+# A retry while that target is still running continues to wait.
+# A retry after the target has exited has to start from an empty transport
+# directory. current stays on the old tag until receipt.bin is there.
+# The kernel and OVMF are the pins in this checkout.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=hops.sh
+source "$HERE/hops.sh"
+
+if [[ "$#" -ne 1 ]]; then
+  echo "usage: migrate <v*-tag>" >&2
+  exit 1
+fi
+
+to="$1"
+require_tag "$to"
+refuse_state_disk_overrides
+
+if ! command -v gh >/dev/null 2>&1; then
+  echo "missing gh" >&2
+  exit 1
+fi
+if ! gh auth status; then
+  echo "gh is not logged in for $(id -un)" >&2
+  exit 1
+fi
+
+require_root
+
+hops="$(hops_root)"
+from="$(read_current "$hops")"
+if [[ "$to" == "$from" ]]; then
+  echo "current is already $to" >&2
+  exit 1
+fi
+
+upgrade="$hops/upgrade-from-${from}"
+transport="$hops/transport-from-${from}"
+receipt="$transport/receipt.bin"
+pending="$hops/pending"
+release_dir="$hops/images/${to}/release"
+pidfile="$hops/logs/${to}.pid"
+console="$hops/logs/${to}.console"
+
+if [[ ! -d "$upgrade" || ! -d "$transport" ]]; then
+  echo "missing $upgrade or $transport; launch-genesis mounts these for the live guest" >&2
+  exit 1
+fi
+
+pending_tag=""
+if [[ -f "$pending" ]]; then
+  pending_tag="$(head -n 1 "$pending")"
+fi
+
+finish_move() {
+  claim_source_session "$from" "$to"
+  write_current "$hops" "$to"
+  rm -f "$pending"
+  echo "current is now $to"
+}
+
+if [[ -s "$receipt" ]]; then
+  if [[ "$pending_tag" != "$to" ]]; then
+    echo "receipt.bin is already in $transport" >&2
+    echo "current stays $from. Clear $transport before migrating to $to." >&2
+    exit 1
+  fi
+  echo "receipt.bin is already present"
+  finish_move
+  exit 0
+fi
+
+target_pid() {
+  local pid="" line
+  if [[ -f "$pidfile" ]]; then
+    pid="$(head -n 1 "$pidfile" || true)"
+    if [[ -z "$pid" ]] || ! kill -0 "$pid" 2>/dev/null; then
+      pid=""
+    fi
+  fi
+  if [[ -z "$pid" ]]; then
+    line="$(pgrep -af qemu-system-x86_64 | grep -F -- "-name zns-${to} -nographic" | head -n 1 || true)"
+    pid="${line%% *}"
+  fi
+  if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+    printf '%s\n' "$pid"
+    return 0
+  fi
+  return 1
+}
+
+wait_for_receipt() {
+  local pid="$1"
+  echo "waiting for $receipt"
+  ticks=0
+  trap 'echo "target qemu is still running (pid $pid) in tmux session zns-target"; echo "current stays $from until $receipt"; exit 130' INT
+  while [[ ! -s "$receipt" ]]; do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      echo "target qemu exited before receipt.bin" >&2
+      exit 1
+    fi
+    ticks=$((ticks + 1))
+    if ((ticks % 12 == 0)); then
+      echo "still waiting for $receipt"
+    fi
+    sleep 5
+  done
+  trap - INT
+  echo "target console: $console"
+  echo "target pid: $pid"
+  finish_move
+}
+
+if pid="$(target_pid)" && [[ "$pending_tag" == "$to" ]]; then
+  echo "target qemu already running (pid $pid)"
+  wait_for_receipt "$pid"
+  exit 0
+fi
+
+busy=0
+for name in source.ready offer.bin attestation.bin encrypted_seed.bin \
+  source_attestation.bin receipt.bin receipt_attestation.bin; do
+  if [[ -e "$transport/$name" ]]; then
+    echo "transport has $name" >&2
+    busy=1
+  fi
+done
+if [[ "$busy" -eq 1 ]]; then
+  echo "current stays $from. Clear $transport before retrying." >&2
+  exit 1
+fi
+
+echo "live guest: $from"
+echo "target: $to"
+echo "tags are not ordered; a lower tag is a rollback"
+printf '%s\n' "$to" >"$pending"
+
+"$HERE/fetch-release" "$to"
+"$HERE/launch-target" "$to"
+
+if [[ -f "$upgrade/upgrade.bin" && -f "$upgrade/upgrade.toml" && -f "$upgrade/upgrade.bundle.jsonl" ]]; then
+  echo "upgrade files already in $upgrade"
+else
+  cp "$release_dir/upgrade.toml" "$upgrade/upgrade.toml"
+  cp "$release_dir/upgrade.bundle.jsonl" "$upgrade/upgrade.bundle.jsonl"
+  cp "$release_dir/upgrade.bin" "$upgrade/upgrade.bin.partial"
+  mv "$upgrade/upgrade.bin.partial" "$upgrade/upgrade.bin"
+  echo "dropped upgrade files into $upgrade"
+fi
+
+pid="$(head -n 1 "$pidfile")"
+if [[ -z "$pid" ]] || ! kill -0 "$pid" 2>/dev/null; then
+  echo "target qemu is not running" >&2
+  exit 1
+fi
+
+wait_for_receipt "$pid"

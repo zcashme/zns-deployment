@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+# Boot the migration target against the live guest's hop directories.
+#
+#   sudo ./launch/fetch-release v0.1.x
+#   sudo ./launch/launch-target v0.1.x
+#
+# Reads the live tag from $ZNS_HOPS/current. Mounts that guest's upgrade and
+# transport directories, plus an empty pair for the following hop. QEMU runs
+# in the operator's tmux session zns-target. This command does not publish
+# upgrade files and does not change current.
+#
+# State images are only $ZNS_HOPS/images/<tag>/*.img. The ZNS disk is created
+# empty when missing. The Zebra disk is filled from the latest chain snapshot
+# when missing. An existing file is left unchanged. Disk paths from the
+# environment are refused.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=hops.sh
+source "$HERE/hops.sh"
+
+ZNS_IMG_SIZE="${ZNS_IMG_SIZE:-4G}"
+
+if [[ "$#" -ne 1 ]]; then
+  echo "usage: launch-target <v*-tag>" >&2
+  exit 1
+fi
+
+to="$1"
+require_tag "$to"
+refuse_state_disk_overrides
+require_root
+
+for cmd in truncate mkfs.ext4 tmux; do
+  if ! command -v "$cmd" >/dev/null; then
+    echo "missing $cmd" >&2
+    exit 1
+  fi
+done
+
+hops="$(hops_root)"
+from="$(read_current "$hops")"
+if [[ "$to" == "$from" ]]; then
+  echo "current is already $to" >&2
+  exit 1
+fi
+
+upgrade="$hops/upgrade-from-${from}"
+transport="$hops/transport-from-${from}"
+if [[ ! -d "$upgrade" || ! -d "$transport" ]]; then
+  echo "missing $upgrade or $transport; launch-genesis mounts these for the live guest" >&2
+  exit 1
+fi
+
+initrd="$hops/images/${to}/release/zns-initrd.img"
+if [[ ! -s "$initrd" ]]; then
+  echo "missing $initrd; run fetch-release $to" >&2
+  exit 1
+fi
+
+mkdir -p "$hops/upgrade-from-${to}" "$hops/transport-from-${to}" "$hops/logs"
+mkdir -p "$hops/images/${to}"
+
+zns_img="$hops/images/${to}/zns-state.img"
+zebra_img="$hops/images/${to}/zebra-state.img"
+
+create_image() {
+  local path="$1" size="$2"
+  if [[ -L "$path" ]]; then
+    echo "$path is a symlink; refusing to use it" >&2
+    exit 1
+  fi
+  if [[ -e "$path" ]]; then
+    echo "keeping $path"
+    return
+  fi
+  echo "creating $path ($size)"
+  truncate -s "$size" "$path"
+  mkfs.ext4 -q -F "$path"
+}
+
+create_image "$zns_img" "$ZNS_IMG_SIZE"
+if [[ -L "$zebra_img" ]]; then
+  echo "$zebra_img is a symlink; refusing to use it" >&2
+  exit 1
+fi
+if [[ -e "$zebra_img" ]]; then
+  echo "keeping $zebra_img"
+else
+  "$HERE/install-zebra-snapshot" "$to"
+fi
+
+mint_fwd="${ZNS_MINT_FWD:-19465}"
+zebra_fwd="${ZNS_ZEBRA_FWD:-19999}"
+name="zns-${to}"
+console="$hops/logs/${to}.console"
+pidfile="$hops/logs/${to}.pid"
+
+qemu_pid() {
+  local line
+  line="$(pgrep -af qemu-system-x86_64 | grep -F -- "-name ${name} -nographic" | head -n 1 || true)"
+  printf '%s\n' "${line%% *}"
+}
+
+pid=""
+if [[ -f "$pidfile" ]]; then
+  pid="$(head -n 1 "$pidfile" || true)"
+  if [[ -z "$pid" ]] || ! kill -0 "$pid" 2>/dev/null; then
+    pid=""
+  fi
+fi
+if [[ -z "$pid" ]]; then
+  pid="$(qemu_pid)"
+fi
+
+if [[ -n "$pid" ]]; then
+  echo "target qemu already running (pid $pid)"
+  printf '%s\n' "$pid" >"$pidfile"
+  exit 0
+fi
+
+if operator_tmux has-session -t zns-target 2>/dev/null; then
+  echo "tmux session zns-target already exists and the target qemu is not running" >&2
+  exit 1
+fi
+
+runner="$hops/logs/${to}.launch"
+{
+  printf '%s\n' '#!/bin/bash'
+  printf 'export ZNS_STATE_IMG=%q\n' "$zns_img"
+  printf 'export ZEBRA_STATE_IMG=%q\n' "$zebra_img"
+  printf 'export INITRD=%q\n' "$initrd"
+  printf 'export ZNS_QEMU_NAME=%q\n' "$name"
+  printf 'export ZNS_MINT_FWD=%q\n' "$mint_fwd"
+  printf 'export ZNS_ZEBRA_FWD=%q\n' "$zebra_fwd"
+  printf 'export ZNS_9P=%q\n' "upgrade|${upgrade}|ro;transport|${transport}|rw;upgrade-next|${hops}/upgrade-from-${to}|ro;transport-next|${hops}/transport-from-${to}|rw"
+  printf 'exec %q\n' "$HERE/launch-guest.sh"
+} >"$runner"
+chmod 755 "$runner"
+
+: >"$console"
+if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+  chown "$SUDO_USER" "$console" || true
+  session_cmd="exec sudo -n $(printf '%q' "$runner")"
+else
+  session_cmd="exec $(printf '%q' "$runner")"
+fi
+
+echo "target session: zns-target"
+echo "target console: $console"
+echo "target metrics: 127.0.0.1:${mint_fwd}/metrics and 127.0.0.1:${zebra_fwd}/metrics"
+operator_tmux new-session -d -s zns-target "$session_cmd" \; \
+  pipe-pane -t zns-target -o "cat >> $(printf '%q' "$console")"
+sleep 2
+pid="$(qemu_pid)"
+if [[ -z "$pid" ]] || ! kill -0 "$pid" 2>/dev/null; then
+  echo "target qemu exited" >&2
+  tail -n 40 "$console" >&2 || true
+  operator_tmux kill-session -t zns-target 2>/dev/null || true
+  exit 1
+fi
+printf '%s\n' "$pid" >"$pidfile"
+if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+  chown "$SUDO_USER" "$pidfile" || true
+fi
+echo "target qemu pid $pid"
