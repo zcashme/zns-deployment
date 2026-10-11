@@ -187,7 +187,24 @@ start_keygen() {
 start_supervisor
 
 log "waiting for Zebra readiness on http://127.0.0.1:8080/ready"
-while ! wget -q -O /dev/null http://127.0.0.1:8080/ready 2>/dev/null; do
+attempt=0
+last_err=""
+while ! wget -O /dev/null http://127.0.0.1:8080/ready 2>/tmp/zebra-ready.err; do
+  attempt=$((attempt + 1))
+  err="$(tail -n 1 /tmp/zebra-ready.err 2>/dev/null || true)"
+  if [ "$attempt" -eq 1 ] || [ "$err" != "$last_err" ] || [ $((attempt % 12)) -eq 0 ]; then
+    case "$err" in
+      *503*) why="zebra is up and still syncing" ;;
+      *"can't connect"*|*"Connection refused"*) why="zebra is not listening" ;;
+      *) why="${err:-no response}" ;;
+    esac
+    zebra_line="$(tail -n 1 "$STATE_DIR/log/zebra.log" 2>/dev/null || true)"
+    sup_line="$(tail -n 1 "$STATE_DIR/log/supervisor.log" 2>/dev/null || true)"
+    log "zebra is not ready (try ${attempt}): ${why}"
+    log "zebra.log: ${zebra_line:-empty}"
+    log "supervisor.log: ${sup_line:-empty}"
+    last_err="$err"
+  fi
   watch_supervisor
   sleep 5 || fatal "sleep failed"
 done
@@ -200,8 +217,24 @@ log "running keygen"
 log "keygen output is in $STATE_DIR/log/keygen.log"
 start_keygen
 retry_left=0
+keygen_ticks=0
+shown_addr=""
 
 while true; do
+  keygen_ticks=$((keygen_ticks + 1))
+  # The Treasury address is public. Repeat it so the funding wait does not
+  # scroll it off the serial console.
+  addr="$(grep '^treasury_address ' "$STATE_DIR/keys/ceremony_state.toml" 2>/dev/null || true)"
+  if [ -n "$addr" ]; then
+    if [ "$addr" != "$shown_addr" ] || [ $((keygen_ticks % 12)) -eq 0 ]; then
+      log "fund this address: $addr"
+      shown_addr="$addr"
+    fi
+  fi
+  if [ $((keygen_ticks % 12)) -eq 0 ]; then
+    keygen_line="$(tail -n 1 "$STATE_DIR/log/keygen.log" 2>/dev/null || true)"
+    log "keygen still running: ${keygen_line:-no log line yet}"
+  fi
   watch_supervisor
   if [ -n "$KEYGEN_PID" ] && ! alive "$KEYGEN_PID"; then
     wait "$KEYGEN_PID" || true
