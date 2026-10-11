@@ -1,8 +1,12 @@
 # shellcheck shell=bash
 # Shared launch settings and checks. Sourced by measure-guest.sh, print-guest-config.sh, and launch-guest.sh.
 #
-# Every value here is an input to the SNP measurement, except the state disk paths.
-# Change one and the expected measurement changes, so all three scripts read this file.
+# Only these values go to sev-snp-measure in measure-guest.sh: vCPU count, CPU family,
+# model and stepping, guest features, OVMF, kernel, initrd, and command line.
+# Guest policy, KERNEL_HASHES, machine type, memory, CBITPOS, REDUCED_PHYS_BITS, and
+# the -cpu setting are checked or printed here but are not passed to the tool. The
+# policy is reported beside the digest instead. State disk paths affect only launch.
+# All three scripts read this file so the measurement and the launch use the same values.
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
