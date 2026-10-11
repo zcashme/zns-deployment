@@ -3,8 +3,8 @@
 # CI reads these for the release manifest and pack-upgrade reads guest_policy from them.
 set -euo pipefail
 
-# shellcheck source=common.sh
-source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
+# shellcheck source=guest-config.sh
+source "$(dirname "${BASH_SOURCE[0]}")/guest-config.sh"
 
 cat <<EOF
 kernel=${KERNEL}

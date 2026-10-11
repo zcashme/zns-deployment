@@ -3,8 +3,8 @@
 # CI runs this after build-image.sh. It does not start a VM.
 set -euo pipefail
 
-# shellcheck source=common.sh
-source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
+# shellcheck source=guest-config.sh
+source "$(dirname "${BASH_SOURCE[0]}")/guest-config.sh"
 
 require_measured kernel "$KERNEL"
 require_measured initrd "$INITRD"

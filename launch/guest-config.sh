@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# Shared launch settings and checks. Sourced by measure.sh, print-params.sh, and qemu-snp.sh.
+# Shared launch settings and checks. Sourced by measure-guest.sh, print-guest-config.sh, and launch-guest.sh.
 #
 # Every value here is an input to the SNP measurement, except the state disk paths.
 # Change one and the expected measurement changes, so all three scripts read this file.

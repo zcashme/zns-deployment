@@ -5,8 +5,8 @@
 # The state disks are not part of the measurement.
 set -euo pipefail
 
-# shellcheck source=common.sh
-source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
+# shellcheck source=guest-config.sh
+source "$(dirname "${BASH_SOURCE[0]}")/guest-config.sh"
 
 cpuinfo_field() {
   local key="$1" line val
