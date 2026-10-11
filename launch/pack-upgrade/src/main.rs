@@ -147,8 +147,7 @@ fn measurement_file(path: &Path) -> Result<[u8; 48], String> {
 }
 
 fn launch_policy(root: &Path) -> Result<u64, String> {
-    let output = Command::new(root.join("launch/qemu-snp.sh"))
-        .arg("--print")
+    let output = Command::new(root.join("launch/print-guest-config.sh"))
         .stderr(Stdio::inherit())
         .output()
         .map_err(|error| format!("launch parameters: {error}"))?;

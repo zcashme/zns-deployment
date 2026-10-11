@@ -100,7 +100,7 @@ jobs:
         run: ./launch/install-snp-measure.sh
 
       - name: Compute expected SNP measurement
-        run: ./launch/qemu-snp.sh --measure
+        run: ./launch/measure-guest.sh
 
       - name: Pack canonical upgrade document
         env:
@@ -142,7 +142,7 @@ jobs:
           )
 
           measurement = (root / "build" / "snp-measurement.txt").read_text().strip()
-          text = subprocess.check_output(["./launch/qemu-snp.sh", "--print"], text=True)
+          text = subprocess.check_output(["./launch/print-guest-config.sh"], text=True)
           params = {}
           for line in text.splitlines():
               key, val = line.split("=", 1)
