@@ -20,8 +20,8 @@ import subprocess
 import tarfile
 import urllib.request
 
-# ip, wget, grep, mkdir, mount, pidof, tail, and sleep are BusyBox applets,
-# so they have no separate files.
+# ip, wget, grep, mkdir, mount, pidof, tail, sleep, and df are BusyBox applets,
+# so they have no separate files. df is linked onto PATH for the console status.
 TOOLS = ("blkid", "ipconfig", "modprobe", "busybox")
 # PT_INTERP is /lib64/ld-linux-x86-64.so.2. The linker is usr/lib64/ld-linux-x86-64.so.2.
 USRMERGE = {
@@ -202,8 +202,31 @@ def link_usrmerge(stage):
         os.symlink(target, dest)
 
 
+def require_busybox_applet(binary, name):
+    """The applet table sits just before the BusyBox version string."""
+    data = binary.read_bytes()
+    end = data.find(b"BusyBox v")
+    if end < 0:
+        raise SystemExit(f"{binary} has no BusyBox version string")
+    region = data[max(0, end - 4000) : end]
+    needle = b"\x00" + name.encode("ascii") + b"\x00"
+    if needle not in region:
+        raise SystemExit(f"pinned busybox has no {name} applet")
+
+
+def link_busybox_applet(stage, name):
+    dest = stage / "usr/bin" / name
+    if dest.is_symlink():
+        if os.readlink(dest) == "busybox":
+            return
+        raise SystemExit(f"{dest} is not the busybox {name} applet")
+    if dest.exists():
+        raise SystemExit(f"{dest} exists and is not the busybox {name} applet")
+    os.symlink("busybox", dest)
+
+
 def install_shell(stage):
-    """/bin/sh is a symlink to this BusyBox."""
+    """/bin/sh is a symlink to this BusyBox. df is too."""
     binaries = [
         path
         for path in stage.rglob("busybox")
@@ -212,6 +235,7 @@ def install_shell(stage):
     if len(binaries) != 1:
         raise SystemExit(f"expected one busybox binary, found {binaries}")
     src = binaries[0]
+    require_busybox_applet(src, "df")
     dest = stage / "usr/bin/busybox"
     dest.parent.mkdir(parents=True, exist_ok=True)
     if not dest.exists() and not dest.is_symlink():
@@ -219,6 +243,7 @@ def install_shell(stage):
     sh = stage / "usr/bin/sh"
     if not sh.exists() and not sh.is_symlink():
         os.symlink("busybox", sh)
+    link_busybox_applet(stage, "df")
 
 
 def link_on_path(stage, tool, src_in_stage):

@@ -35,7 +35,7 @@ The hops directory keeps `current`, the tag of the live guest. It advances when 
 
 ## Console
 
-`launch-genesis` stays in the foreground of tmux session `zns-source`. That terminal is the guest serial console. The guest repeats the release it is running, every 10 minutes.
+`launch-genesis` stays in the foreground of tmux session `zns-source`. That terminal is the guest serial console. Every 10 minutes the guest repeats the release it is running, whether Zebra is healthy and ready, the latest Zcash block, whether mint is up, memory available, and free space on the ZNS and Zebra disks.
 
 `Ctrl-a c` switches to the QEMU monitor. `quit` stops the VM, and `Ctrl-a c` returns to the guest. `Ctrl-a x` stops it directly. This is the host powering the VM off. The guest policy keeps that monitor from reading guest memory.
 
