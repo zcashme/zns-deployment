@@ -398,6 +398,107 @@ migrate_watch() {
   done
 }
 
+http_ok() {
+  wget -q -O /dev/null "$1" 2>/dev/null
+}
+
+# One integer from a Prometheus text file. $2 is the metric name after dots
+# have been turned into underscores.
+metric_int() {
+  metric_file="$1"
+  metric_name="$2"
+  metric_got=""
+  metric_line=""
+  if [ ! -f "$metric_file" ]; then
+    return
+  fi
+  while IFS= read -r metric_line || [ -n "$metric_line" ]; do
+    case "$metric_line" in
+      "$metric_name "*)
+        metric_got="${metric_line#"$metric_name "}"
+        metric_got="${metric_got%%[!0-9]*}"
+        ;;
+    esac
+  done <"$metric_file"
+  printf '%s' "$metric_got"
+}
+
+# $1 is kibibytes. Prints 512K, 3.4M, or 6.2G.
+kib_human() {
+  n="$1"
+  case "$n" in
+    ''|*[!0-9]*)
+      printf 'unknown'
+      return
+      ;;
+  esac
+  if [ "$n" -ge 1048576 ]; then
+    div=1048576
+    unit=G
+  elif [ "$n" -ge 1024 ]; then
+    div=1024
+    unit=M
+  else
+    printf '%sK' "$n"
+    return
+  fi
+  whole=$((n / div))
+  frac=$(((n % div) * 10 / div))
+  printf '%s.%s%s' "$whole" "$frac" "$unit"
+}
+
+# $1 is a MemTotal-style key. The value is kibibytes.
+mem_kb() {
+  mem_key="$1"
+  mem_got=""
+  mem_line=""
+  if [ ! -r /proc/meminfo ]; then
+    return
+  fi
+  while IFS= read -r mem_line || [ -n "$mem_line" ]; do
+    case "$mem_line" in
+      "${mem_key}:"*)
+        set -f
+        set -- $mem_line
+        set +f
+        if [ "$#" -ge 2 ]; then
+          mem_got="$2"
+        fi
+        ;;
+    esac
+  done </proc/meminfo
+  printf '%s' "$mem_got"
+}
+
+# $1 is the label, $2 is the mount. df -k is 1024-byte blocks.
+disk_phrase() {
+  label="$1"
+  mnt="$2"
+  text=""
+  text="$(df -k -P "$mnt" 2>/dev/null)" || {
+    printf '%s disk unknown' "$label"
+    return
+  }
+  row=""
+  line=""
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      Filesystem*|'') continue ;;
+    esac
+    row="$line"
+  done <<EOF
+$text
+EOF
+  set -f
+  set -- $row
+  set +f
+  if [ "$#" -lt 6 ] || [ -z "${2:-}" ] || [ -z "${4:-}" ]; then
+    printf '%s disk unknown' "$label"
+    return
+  fi
+  printf '%s disk %s free of %s' "$label" "$(kib_human "$4")" "$(kib_human "$2")"
+}
+
 release_notice() {
   rel=""
   if [ ! -s /etc/zns-release ]; then
@@ -408,7 +509,42 @@ release_notice() {
     return
   fi
   while true; do
+    if http_ok http://127.0.0.1:8080/healthy; then
+      if http_ok http://127.0.0.1:8080/ready; then
+        zebra_line="Zebra is healthy and ready"
+      else
+        zebra_line="Zebra is healthy and still syncing"
+      fi
+    else
+      zebra_line="Zebra is not up"
+    fi
+    block=""
+    if wget -q -O /tmp/zns-zebra-metrics http://127.0.0.1:9999/metrics 2>/dev/null; then
+      # zcash.chain.verified.block.height, the latest block this Zebra has verified.
+      block="$(metric_int /tmp/zns-zebra-metrics zcash_chain_verified_block_height)"
+    fi
+    if http_ok http://127.0.0.1:9464/metrics; then
+      mint_line="Mint is up"
+      if [ -z "$block" ] && wget -q -O /tmp/zns-mint-metrics http://127.0.0.1:9464/metrics 2>/dev/null; then
+        block="$(metric_int /tmp/zns-mint-metrics zns_mint_chain_tip_height)"
+      fi
+    else
+      mint_line="Mint is not up"
+    fi
+    if [ -z "$block" ]; then
+      block="unknown"
+    fi
+    mem_total="$(mem_kb MemTotal)"
+    mem_avail="$(mem_kb MemAvailable)"
+    if [ -n "$mem_total" ] && [ -n "$mem_avail" ]; then
+      mem_line="Memory $(kib_human "$mem_avail") available of $(kib_human "$mem_total")."
+    else
+      mem_line="Memory unknown."
+    fi
     echo "You are running the ${rel} release of the ZNS protocol"
+    echo "${zebra_line}. Latest Zcash block ${block}. ${mint_line}."
+    echo "$mem_line"
+    echo "$(disk_phrase ZNS /state). $(disk_phrase Zebra /var/lib/zebra)."
     sleep 600 || return
   done
 }
