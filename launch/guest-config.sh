@@ -13,8 +13,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 KERNEL="${KERNEL:-$ROOT/build/vmlinuz}"
 INITRD="${INITRD:-$ROOT/build/zns-initrd.img}"
-# rdinit makes /scripts/init-premount/zns-testnet PID 1.
-CMDLINE="${CMDLINE:-console=ttyS0 rdinit=/scripts/init-premount/zns-testnet}"
+# rdinit makes /scripts/init-premount/zns PID 1.
+CMDLINE="${CMDLINE:-console=ttyS0 rdinit=/scripts/init-premount/zns}"
 # build-image.sh writes this from ovmf_fd_sha256.
 OVMF="${OVMF:-$ROOT/build/OVMF.amdsev.fd}"
 # The testnet command omits policy=. QEMU's default is 0x30000.

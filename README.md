@@ -18,7 +18,7 @@ Memory size, the state disks, host port forwards, and 9p mounts are launch setti
 | `image/build-image.sh` | Fetch pins, build binaries, write `build/zns-initrd.img` |
 | `image/guest-debs.sha256` | BusyBox, kmod, and the shared libraries |
 | `image/configs/zebrad.toml` | Zebra config baked into the initrd |
-| `image/initramfs/scripts/init-premount/zns-testnet` | PID 1 |
+| `image/initramfs/scripts/init-premount/zns` | PID 1 |
 | `launch/guest-config.sh` | Settings shared by the measurement and the launch |
 | `launch/measure-guest.sh` | Expected measurement |
 | `launch/print-guest-config.sh` | Settings for the manifest and the upgrade packer |

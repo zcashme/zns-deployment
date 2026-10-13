@@ -1,5 +1,5 @@
 #!/bin/sh
-# Testnet guest init. This script is PID 1.
+# Guest init. This script is PID 1.
 # Mount the two state disks, get an address by DHCP, then run the ceremony.
 # zns-supervise keeps Zebra, mint, and the metrics forwarder running.
 # Logs live under /state/log and stay on the state disk across a QEMU restart.
@@ -14,7 +14,7 @@ KEYGEN_PID=""
 PARAMS_DIR="/root/.zcash-params"
 
 log() {
-  echo "[zns-testnet] $*"
+  echo "[zns] $*"
 }
 
 fatal() {
