@@ -1,17 +1,18 @@
 # Copied into the guest at /etc/zebra/zebrad.toml.
-# Testnet listeners match zns-mint and zns-keygen built with --features testnet.
+# Mainnet listeners match zns-mint and zns-keygen built without --features testnet.
 # indexer_listen_addr requires zebrad built with --features indexer.
+# The indexer port stays 18230. Mint dials that address on every network.
 
 [network]
-network = "Testnet"
-listen_addr = "[::]:18233"
+network = "Mainnet"
+listen_addr = "[::]:8233"
 
 [state]
 cache_dir = "/var/lib/zebra"
 ephemeral = false
 
 [rpc]
-listen_addr = "127.0.0.1:18232"
+listen_addr = "127.0.0.1:8232"
 indexer_listen_addr = "127.0.0.1:18230"
 enable_cookie_auth = false
 parallel_cpu_threads = 0

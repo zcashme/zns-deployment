@@ -263,16 +263,37 @@ need protoc
 need cmake
 
 NETWORK="$(toml_get network)"
-if [[ "$NETWORK" != "testnet" ]]; then
-  echo "TODO: network=${NETWORK} is not wired. This guest is testnet." >&2
-  exit 1
-fi
+case "$NETWORK" in
+  testnet)
+    zebra_network="Testnet"
+    zebra_p2p="[::]:18233"
+    zebra_rpc="127.0.0.1:18232"
+    ;;
+  mainnet)
+    zebra_network="Mainnet"
+    zebra_p2p="[::]:8233"
+    zebra_rpc="127.0.0.1:8232"
+    ;;
+  *)
+    echo "network=${NETWORK} is not testnet or mainnet" >&2
+    exit 1
+    ;;
+esac
 
-if ! grep -q 'network = "Testnet"' "$ROOT/image/configs/zebrad.toml"; then
-  echo "image/configs/zebrad.toml must set network = \"Testnet\"" >&2
+zebrad_config="$ROOT/image/configs/zebrad.toml"
+if ! grep -q "network = \"${zebra_network}\"" "$zebrad_config"; then
+  echo "image/configs/zebrad.toml must set network = \"${zebra_network}\"" >&2
   exit 1
 fi
-if ! grep -q 'indexer_listen_addr = "127.0.0.1:18230"' "$ROOT/image/configs/zebrad.toml"; then
+if ! grep -F -q "listen_addr = \"${zebra_p2p}\"" "$zebrad_config"; then
+  echo "image/configs/zebrad.toml must listen on ${zebra_p2p}" >&2
+  exit 1
+fi
+if ! grep -F -q "listen_addr = \"${zebra_rpc}\"" "$zebrad_config"; then
+  echo "image/configs/zebrad.toml must listen on ${zebra_rpc}" >&2
+  exit 1
+fi
+if ! grep -q 'indexer_listen_addr = "127.0.0.1:18230"' "$zebrad_config"; then
   echo "image/configs/zebrad.toml must listen on 127.0.0.1:18230" >&2
   exit 1
 fi
@@ -341,8 +362,13 @@ if [[ "$previous" != "$expected" ]]; then
   exit 1
 fi
 
-build_bin "$SRC/zns-mint" --bin zns-mint --features testnet
-build_bin "$SRC/zns-keygen" --bin zns-keygen --features testnet
+if [[ "$NETWORK" == "testnet" ]]; then
+  build_bin "$SRC/zns-mint" --bin zns-mint --features testnet
+  build_bin "$SRC/zns-keygen" --bin zns-keygen --features testnet
+else
+  build_bin "$SRC/zns-mint" --bin zns-mint
+  build_bin "$SRC/zns-keygen" --bin zns-keygen
+fi
 build_bin "$SRC/zns-migrate" --bin zns-migrate
 build_bin "$SRC/zebra" -p zebrad --features indexer,prometheus
 
@@ -388,12 +414,12 @@ printf '%s\n' "$release" >"$STAGE/etc/zns-release"
 if [[ -z "$release" ]]; then
   echo "no release tag; the guest will not name a release on the console" >&2
 fi
-install -m 0755 "$ROOT/image/initramfs/scripts/init-premount/zns-testnet" \
-  "$STAGE/scripts/init-premount/zns-testnet"
+install -m 0755 "$ROOT/image/initramfs/scripts/init-premount/zns" \
+  "$STAGE/scripts/init-premount/zns"
 
 cat >"$STAGE/init" <<'EOF'
 #!/bin/sh
-exec /scripts/init-premount/zns-testnet
+exec /scripts/init-premount/zns
 EOF
 chmod 0755 "$STAGE/init"
 

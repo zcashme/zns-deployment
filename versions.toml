@@ -23,7 +23,7 @@ zebra_db_format = 29
 # state/v<zebra_db_format_previous>/<network> to state/v<zebra_db_format>.
 zebra_db_format_previous = 28
 
-network = "testnet"
+network = "mainnet"
 
 # zebrad at zebra_commit requires Rust 1.91.
 rust_version = "1.91.0"
