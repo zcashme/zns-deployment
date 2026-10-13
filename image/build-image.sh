@@ -281,22 +281,25 @@ case "$NETWORK" in
 esac
 
 zebrad_config="$ROOT/image/configs/zebrad.toml"
-if ! grep -q "network = \"${zebra_network}\"" "$zebrad_config"; then
-  echo "image/configs/zebrad.toml must set network = \"${zebra_network}\"" >&2
-  exit 1
-fi
-if ! grep -F -q "listen_addr = \"${zebra_p2p}\"" "$zebrad_config"; then
-  echo "image/configs/zebrad.toml must listen on ${zebra_p2p}" >&2
-  exit 1
-fi
-if ! grep -F -q "listen_addr = \"${zebra_rpc}\"" "$zebrad_config"; then
-  echo "image/configs/zebrad.toml must listen on ${zebra_rpc}" >&2
-  exit 1
-fi
-if ! grep -q 'indexer_listen_addr = "127.0.0.1:18230"' "$zebrad_config"; then
-  echo "image/configs/zebrad.toml must listen on 127.0.0.1:18230" >&2
-  exit 1
-fi
+python3 - "$zebrad_config" "$zebra_network" "$zebra_p2p" "$zebra_rpc" <<'PY'
+import sys
+import tomllib
+from pathlib import Path
+
+path, network, p2p, rpc = sys.argv[1:]
+data = tomllib.loads(Path(path).read_text())
+net = data.get("network", {})
+rpc_table = data.get("rpc", {})
+checks = (
+    ("network.network", net.get("network"), network),
+    ("network.listen_addr", net.get("listen_addr"), p2p),
+    ("rpc.listen_addr", rpc_table.get("listen_addr"), rpc),
+    ("rpc.indexer_listen_addr", rpc_table.get("indexer_listen_addr"), "127.0.0.1:18230"),
+)
+errors = [f"{name} is {got!r}, expected {want!r}" for name, got, want in checks if got != want]
+if errors:
+    raise SystemExit("image/configs/zebrad.toml\n" + "\n".join(errors))
+PY
 
 CANON_COMMIT="$(toml_get canon_commit)"
 MINT_COMMIT="$(toml_get mint_commit)"
