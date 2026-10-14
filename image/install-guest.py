@@ -226,7 +226,7 @@ def link_busybox_applet(stage, name):
 
 
 def install_shell(stage):
-    """/bin/sh is a symlink to this BusyBox. df is too."""
+    """/bin/sh is a symlink to this BusyBox. df and reboot are too."""
     binaries = [
         path
         for path in stage.rglob("busybox")
@@ -236,6 +236,7 @@ def install_shell(stage):
         raise SystemExit(f"expected one busybox binary, found {binaries}")
     src = binaries[0]
     require_busybox_applet(src, "df")
+    require_busybox_applet(src, "reboot")
     dest = stage / "usr/bin/busybox"
     dest.parent.mkdir(parents=True, exist_ok=True)
     if not dest.exists() and not dest.is_symlink():
@@ -244,6 +245,7 @@ def install_shell(stage):
     if not sh.exists() and not sh.is_symlink():
         os.symlink("busybox", sh)
     link_busybox_applet(stage, "df")
+    link_busybox_applet(stage, "reboot")
 
 
 def link_on_path(stage, tool, src_in_stage):
