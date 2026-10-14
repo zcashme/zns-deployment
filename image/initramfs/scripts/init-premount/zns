@@ -130,8 +130,12 @@ if [ ! -f "$ZEBRA_CONFIG" ]; then
   fatal "Zebra config not found at $ZEBRA_CONFIG"
 fi
 
-if ! grep -q 'indexer_listen_addr = "127.0.0.1:18230"' "$ZEBRA_CONFIG"; then
-  fatal "Zebra gRPC listener 127.0.0.1:18230 is not configured"
+indexer_addr="127.0.0.1:8230"
+if grep -q '^network = "Testnet"' "$ZEBRA_CONFIG"; then
+  indexer_addr="127.0.0.1:18230"
+fi
+if ! grep -q "indexer_listen_addr = \"$indexer_addr\"" "$ZEBRA_CONFIG"; then
+  fatal "Zebra gRPC listener $indexer_addr is not configured"
 fi
 
 # kill -0 reports a zombie as alive. State Z in /proc means the process has exited.
