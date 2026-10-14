@@ -1,6 +1,6 @@
 # Ubuntu 26.04 (resolute) amd64 packages for the guest initrd.
 # busybox-initramfs 1:1.37.0-7ubuntu1 is the testnet BusyBox. It provides
-# sh, mkdir, mount, ip, grep, wget, pidof, tail, sleep, and df.
+# sh, mkdir, mount, ip, grep, wget, pidof, tail, sleep, df, and reboot.
 # blkid, ipconfig, and kmod are separate programs.
 # libgcc-s1 and libstdc++6 are for the Rust binaries. The kernel package is not in this list.
 ce2e5af197a7e16931a32470beec9750e6f6c3cb1b1572c936aec0638a6503a2  pool/main/b/busybox/busybox-initramfs_1.37.0-7ubuntu1_amd64.deb

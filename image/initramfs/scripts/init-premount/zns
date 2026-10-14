@@ -20,9 +20,18 @@ log() {
 fatal() {
   log "FATAL: $*"
 
+  # PID 1 on the serial console is the host's keyboard. A shell here would be
+  # root in the measured guest. Stop the guest. This BusyBox has reboot and
+  # not poweroff. QEMU is started with -no-reboot, so reboot exits QEMU.
+  # If both return, exiting PID 1 panics the kernel and still does not start
+  # a shell.
   if [ "$$" -eq 1 ]; then
-    log "dropping to emergency shell"
-    exec /bin/sh
+    log "stopping"
+    if [ -w /proc/sysrq-trigger ]; then
+      echo 1 > /proc/sys/kernel/sysrq 2>/dev/null || true
+      echo o > /proc/sysrq-trigger 2>/dev/null || true
+    fi
+    reboot -f 2>/dev/null || true
   fi
 
   exit 1
