@@ -249,10 +249,9 @@ fn http_ok(port: u16, path: &str) -> bool {
 }
 
 fn ceremony_complete() -> bool {
-    let Ok(text) = std::fs::read_to_string("/state/keys/ceremony_state.toml") else {
-        return false;
-    };
-    text.lines().any(|line| line == "state = \"COMPLETE\"")
+    // The custody manifest is the completion record: keygen writes it at
+    // finalize, and a migration target installs it beside the capsule.
+    std::fs::metadata("/state/keys/zns_custody_manifest.toml").is_ok()
 }
 
 fn migration_holds_mint() -> bool {

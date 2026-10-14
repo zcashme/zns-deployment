@@ -256,8 +256,9 @@ artifact_line() {
 }
 
 ceremony_complete() {
-  [ -f "$STATE_DIR/keys/ceremony_state.toml" ] || return 1
-  grep -qx 'state = "COMPLETE"' "$STATE_DIR/keys/ceremony_state.toml"
+  # The custody manifest is the completion record: keygen writes it at
+  # finalize, and a migration target installs it beside the capsule.
+  [ -s "$STATE_DIR/keys/zns_custody_manifest.toml" ]
 }
 
 source_allowed() {
@@ -614,8 +615,8 @@ shown_addr=""
 while true; do
   keygen_ticks=$((keygen_ticks + 1))
   # The Treasury address is public. Repeat it so the funding wait does not
-  # scroll it off the serial console.
-  addr="$(grep '^treasury_address ' "$STATE_DIR/keys/ceremony_state.toml" 2>/dev/null || true)"
+  # scroll it off the serial console. Keygen logs it to keygen.log.
+  addr="$(sed -n 's/^.*Treasury t-address: //p' "$STATE_DIR/log/keygen.log" 2>/dev/null | tail -n 1)"
   if [ -n "$addr" ]; then
     if [ "$addr" != "$shown_addr" ] || [ $((keygen_ticks % 12)) -eq 0 ]; then
       log "fund this address: $addr"

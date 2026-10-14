@@ -2,16 +2,16 @@
 # commit is what `cargo build --locked` compiles.
 
 mint_repo = "https://github.com/zcashme/zns-mint.git"
-mint_commit = "9210bb973033df1051dcffe05dc8912de107a0cc"
+mint_commit = "b2646fc3f574cf254cbd0f2f66c0f0da4c268128"
 
 keygen_repo = "https://github.com/zcashme/zns-keygen.git"
-keygen_commit = "f898fec819a86adc02cf6a317dda21d67b97e2b6"
+keygen_commit = "7ee00d9c510c3d5dcf3deae3cc8f21c0277d4171"
 
 migrate_repo = "https://github.com/zcashme/zns-migrate.git"
-migrate_commit = "e4339fcf8a5f5393a58459426a21f3405f6bb228"
+migrate_commit = "3a3a18fa881cbdbd0c6dc2b265a5a7f570ba186f"
 
 canon_repo = "https://github.com/zcashme/zns-canon.git"
-canon_commit = "74ad29109909c98146ed4532875b58b99b85074e"
+canon_commit = "4a1228a423f548e456ba2658712359afe3dbb1ab"
 
 zebra_repo = "https://github.com/ZcashFoundation/zebra.git"
 zebra_commit = "6d1e414d6f55e4180d0e47baaa934bf97d5b4fec"
