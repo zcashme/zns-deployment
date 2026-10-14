@@ -188,6 +188,18 @@ watch_supervisor() {
   start_supervisor
 }
 
+print_access_code_key() {
+  # One line per boot. The public key is derived from the seed, so a later
+  # boot prints the same line. stdout is the hex key. Tracing stays in the log.
+  key="$(zns-keygen access-code 2>>"$STATE_DIR/log/keygen.log")" ||
+    fatal "could not derive the access-code public key"
+  case "$key" in
+    *[!0-9a-f]*|"") fatal "access-code public key was not hex" ;;
+  esac
+  [ "${#key}" -eq 64 ] || fatal "access-code public key was not 64 hex characters"
+  log "access-code public key: $key"
+}
+
 start_keygen() {
   : >"$KEYGEN_EXIT" || fatal "could not write $KEYGEN_EXIT"
   # set -e would skip writing the exit status when keygen fails.
@@ -659,6 +671,8 @@ while true; do
 done
 log "ceremony complete"
 fi
+
+print_access_code_key
 
 log "supervisor pid $SUP_PID"
 log "guest logs are in $STATE_DIR/log"

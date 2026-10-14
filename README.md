@@ -54,7 +54,7 @@ sudo ZNS_STATE_IMG=/home/ubuntu/zns-v0.1.x-state.img \
   ./launch/launch-genesis v0.1.x
 ```
 
-Leave that terminal open. Detach from tmux with `Ctrl-b d` if you need the shell back; the guest keeps running. The console prints the Treasury address to fund. Wait until it prints `ceremony complete`.
+Leave that terminal open. Detach from tmux with `Ctrl-b d` if you need the shell back; the guest keeps running. The console prints the Treasury address to fund. Wait until it prints `ceremony complete`. The next line is the access-code public key. Write that line down. Each later boot prints it once.
 
 To move that guest to another release, open a second terminal and run the command below. It stops immediately if that user is not logged in to GitHub.
 
