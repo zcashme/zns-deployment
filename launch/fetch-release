@@ -15,7 +15,8 @@
 # The manifest must name this network, the measurement, and the initrd's
 # hash. upgrade.toml must be the same document as upgrade.bin, and its
 # artifact_hash and to_measurement must be this initrd and measurement.
-# Files already on disk are checked the same way.
+# Files already on disk are reused only when each one has the SHA-256 the
+# release publishes now, and they are verified again the same way.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -73,33 +74,39 @@ attest() {
 }
 
 verify_release() {
+  # The cache check calls this inside an if, where set -e does not apply, so
+  # every step returns on failure itself.
   local dir="$1" with_upgrade="$2" path verified
   for path in "$dir/zns-initrd.img" "$dir/snp-measurement.txt" "$dir/release-manifest.json"; do
     if [[ -L "$path" || ! -f "$path" ]]; then
       echo "missing release file $path" >&2
-      exit 1
+      return 1
     fi
   done
   if [[ "$with_upgrade" -eq 1 ]]; then
     for path in "$dir/upgrade.bin" "$dir/upgrade.toml"; do
       if [[ -L "$path" || ! -f "$path" ]]; then
         echo "missing release file $path" >&2
-        exit 1
+        return 1
       fi
     done
   fi
   if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
-    chmod a+rx "$dir"
-    chmod a+r "$dir"/*
+    chmod a+rx "$dir" || return 1
+    chmod a+r "$dir"/* || return 1
   fi
-  verified="$(mktemp -d)"
-  attest "$dir/zns-initrd.img" "$verified/initrd.json"
-  attest "$dir/snp-measurement.txt" "$verified/measurement.json"
-  attest "$dir/release-manifest.json" "$verified/manifest.json"
-  if [[ "$with_upgrade" -eq 1 ]]; then
-    attest "$dir/upgrade.bin" "$verified/upgrade.json"
+  verified="$(mktemp -d)" || return 1
+  if ! attest "$dir/zns-initrd.img" "$verified/initrd.json" ||
+    ! attest "$dir/snp-measurement.txt" "$verified/measurement.json" ||
+    ! attest "$dir/release-manifest.json" "$verified/manifest.json"; then
+    rm -rf "$verified"
+    return 1
   fi
-  python3 - "$dir" "$tag" "$network" "$with_upgrade" "$verified/upgrade.json" "$dir/upgrade.bundle.jsonl" <<'PY'
+  if [[ "$with_upgrade" -eq 1 ]] && ! attest "$dir/upgrade.bin" "$verified/upgrade.json"; then
+    rm -rf "$verified"
+    return 1
+  fi
+  if ! python3 - "$dir" "$tag" "$network" "$with_upgrade" "$verified/upgrade.json" "$dir/upgrade.bundle.jsonl" <<'PY'
 import hashlib, json, pathlib, struct, sys, tomllib
 
 directory, tag, network, with_upgrade, verified_path, bundle_path = sys.argv[1:]
@@ -189,33 +196,23 @@ bundle = verified[0]["attestation"]["bundle"]
 path = pathlib.Path(bundle_path)
 path.write_text(json.dumps(bundle, separators=(",", ":")) + "\n")
 PY
+  then
+    rm -rf "$verified"
+    return 1
+  fi
   rm -rf "$verified"
 }
 
-assets_ready() {
-  local entry
-  for entry in "${required[@]}"; do
-    [[ ! -L "$release_dir/${entry#* }" && -s "$release_dir/${entry#* }" ]] || return 1
-  done
-}
-
-published="$(operator_gh release view "$tag" -R "$ZNS_REPO" --json assets --jq '.assets[].name')"
+# One line per published file: name, then its sha256.
+published="$(operator_gh release view "$tag" -R "$ZNS_REPO" --json assets \
+  --jq '.assets[] | .name + " " + ((.digest // "") | ltrimstr("sha256:"))')"
 has_asset() {
-  grep -qxF -- "$1" <<<"$published"
+  awk -v n="$1" '$1 == n { found = 1 } END { exit !found }' <<<"$published"
+}
+published_sha() {
+  awk -v n="$1" '$1 == n { print $2; exit }' <<<"$published"
 }
 
-# A release can gain an upgrade document after the first fetch, when the
-# workflow runs again on the tag. Files on disk count only if they include it.
-cached_upgrade=0
-if [[ -s "$release_dir/upgrade.bin" ]]; then
-  cached_upgrade=1
-fi
-if [[ "$cached_upgrade" -eq 1 ]] || ! has_asset "${upgrade[0]%% *}"; then
-  if assets_ready && ( verify_release "$release_dir" "$cached_upgrade" ); then
-    echo "${network} release files already in $release_dir"
-    exit 0
-  fi
-fi
 for entry in "${required[@]}"; do
   if ! has_asset "${entry%% *}"; then
     echo "release $tag has no ${entry%% *}" >&2
@@ -233,14 +230,36 @@ if has_asset "${upgrade[0]%% *}" || has_asset "${upgrade[1]%% *}"; then
   with_upgrade=1
 fi
 
+files=("${required[@]}")
+if [[ "$with_upgrade" -eq 1 ]]; then
+  files+=("${upgrade[@]}")
+fi
+
+# The workflow can run again on a tag and replace or add files, so a file on
+# disk is reused only when it has the hash the release publishes now.
+cache_matches() {
+  local entry local_path want got
+  for entry in "${files[@]}"; do
+    local_path="$release_dir/${entry#* }"
+    want="$(published_sha "${entry%% *}")"
+    [[ -n "$want" && -s "$local_path" && ! -L "$local_path" ]] || return 1
+    got="$(sha256sum "$local_path" | awk '{ print $1 }')"
+    [[ "$got" == "$want" ]] || return 1
+  done
+  if [[ "$with_upgrade" -eq 0 && -e "$release_dir/upgrade.bin" ]]; then
+    return 1
+  fi
+}
+
+if cache_matches && verify_release "$release_dir" "$with_upgrade"; then
+  echo "${network} release files already in $release_dir"
+  exit 0
+fi
+
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
   chown "$SUDO_USER" "$tmp"
-fi
-files=("${required[@]}")
-if [[ "$with_upgrade" -eq 1 ]]; then
-  files+=("${upgrade[@]}")
 fi
 patterns=()
 for entry in "${files[@]}"; do
@@ -250,7 +269,10 @@ operator_gh release download "$tag" -R "$ZNS_REPO" "${patterns[@]}" -D "$tmp"
 for entry in "${files[@]}"; do
   mv "$tmp/${entry%% *}" "$tmp/${entry#* }"
 done
-verify_release "$tmp" "$with_upgrade"
+if ! verify_release "$tmp" "$with_upgrade"; then
+  echo "release $tag did not verify for $network" >&2
+  exit 1
+fi
 
 install_file() {
   cp "$tmp/$1" "$release_dir/$1.partial"

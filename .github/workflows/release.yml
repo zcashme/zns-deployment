@@ -3,7 +3,9 @@
 # A tag push builds every network in versions.toml networks and publishes
 # zns-<network>-* files in one release, with no upgrade document. Running
 # the workflow on a tag builds one network with an upgrade document from
-# that network's live guest, and adds those files to the same release.
+# that network's live guest and adds only zns-<network>-upgrade.bin and
+# .toml to the same release. The image the tag push published stays; the
+# document's artifact_hash has to match it, which fetch-release checks.
 name: Release
 
 on:
@@ -159,6 +161,7 @@ jobs:
       # Published names are zns-<network>-<name>, with a leading zns- dropped
       # from <name>: build/bin/zns-mint becomes zns-mainnet-mint.
       - name: Name release files
+        if: github.event_name != 'workflow_dispatch'
         run: |
           prefix="zns-${NETWORK}-"
           out=build/release
@@ -170,12 +173,21 @@ jobs:
             cp "$path" "$out/${prefix}${name#zns-}"
           done
           cp build/snp-measurement.txt "$out/${prefix}snp-measurement.txt"
-          if [[ -f build/upgrade.bin ]]; then
-            cp build/upgrade.bin "$out/${prefix}upgrade.bin"
-            cp build/upgrade.toml "$out/${prefix}upgrade.toml"
-          fi
+
+      # A run on a tag publishes only the upgrade document, so the image a
+      # genesis host already booted is never replaced.
+      - name: Name upgrade files
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          prefix="zns-${NETWORK}-"
+          out=build/release
+          rm -rf "$out"
+          mkdir -p "$out"
+          cp build/upgrade.bin "$out/${prefix}upgrade.bin"
+          cp build/upgrade.toml "$out/${prefix}upgrade.toml"
 
       - name: Generate release manifest
+        if: github.event_name != 'workflow_dispatch'
         run: |
           python3 - <<'PY'
           import hashlib
@@ -249,6 +261,7 @@ jobs:
           PY
 
       - name: Hash release files
+        if: github.event_name != 'workflow_dispatch'
         run: |
           cd build/release
           sums="$(sha256sum zns-"${NETWORK}"-*)"

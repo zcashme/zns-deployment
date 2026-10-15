@@ -43,7 +43,7 @@ A host serves one network. The first launch command run with `ZNS_NETWORK=mainne
 
 ## Console
 
-`launch-genesis` stays in the foreground of tmux session `zns-source`. That terminal is the guest serial console. Every 10 minutes the guest repeats the release it is running, whether Zebra is healthy and ready, the latest Zcash block, whether mint is up, memory available, and free space on the ZNS and Zebra disks.
+`launch-genesis` starts the guest in tmux session `zns-source`. That session is the guest serial console, and it is also appended to `logs/<tag>.console` in the hops directory. Attach with `tmux attach -t zns-source`. Every 10 minutes the guest repeats the release it is running, whether Zebra is healthy and ready, the latest Zcash block, whether mint is up, memory available, and free space on the ZNS and Zebra disks.
 
 `Ctrl-a c` switches to the QEMU monitor. `quit` stops the VM, and `Ctrl-a c` returns to the guest. `Ctrl-a x` stops it directly. This is the host powering the VM off. The guest policy keeps that monitor from reading guest memory.
 
@@ -53,17 +53,17 @@ Zebra metrics are `127.0.0.1:9999/metrics`. Mint metrics are `127.0.0.1:9465/met
 
 Run this on the host, from a checkout of the release you are moving to. Signing in and out of GitHub is covered separately. The hops directory on this host is `/home/ubuntu/zns-hops`. The file `current` in that directory is the release that is live.
 
-The first guest is started once. Point it at the two disk images already on the host. This command does not create or replace them. It downloads and verifies the release's initrd for this host's network, and writes the console to `logs/<tag>.console` in the hops directory.
+The first guest is started once. Point it at the two disk images already on the host. This command does not create or replace them. It downloads and verifies the release's initrd for this host's network, starts the guest in tmux session `zns-source`, and writes the console to `logs/<tag>.console` in the hops directory.
 
 ```bash
-tmux new -s zns-source
 sudo ZNS_NETWORK=testnet \
   ZNS_STATE_IMG=/home/ubuntu/zns-v0.1.x-state.img \
   ZEBRA_STATE_IMG=/home/ubuntu/zebra-state.img \
   ./launch/launch-genesis v0.1.x
+tmux attach -t zns-source
 ```
 
-Leave that terminal open. Detach from tmux with `Ctrl-b d` if you need the shell back; the guest keeps running. The console prints the Treasury address to fund. Wait until it prints `ceremony complete`. The next line is the access-code public key. Write that line down. Each later boot prints it once.
+Detach from tmux with `Ctrl-b d` if you need the shell back; the guest keeps running. The console prints the Treasury address to fund. Wait until it prints `ceremony complete`. The next line is the access-code public key. Write that line down. Each later boot prints it once.
 
 To move that guest to another release, open a second terminal and run the command below. It stops immediately if that user is not logged in to GitHub.
 
