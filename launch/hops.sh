@@ -3,6 +3,49 @@
 # $ZNS_HOPS/current is the release tag of the guest that is live.
 # It is a name, not a counter. migrate writes the next tag only after
 # receipt.bin appears, and it does not compare version numbers.
+#
+# $ZNS_HOPS/network is the network this host serves, one of versions.toml
+# networks. The first command run with ZNS_NETWORK set records it. Later
+# commands read it, and a different ZNS_NETWORK is refused.
+
+HOPS_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# versions.toml networks, one per line.
+versions_networks() {
+  local line
+  line="$(grep -E '^networks[[:space:]]*=' "$HOPS_REPO_ROOT/versions.toml" | head -n 1 || true)"
+  if [[ -z "$line" ]]; then
+    echo "versions.toml has no networks" >&2
+    exit 1
+  fi
+  grep -oE '"[a-z]+"' <<<"${line#*=}" | tr -d '"'
+}
+
+hops_network() {
+  local hops="$1" net=""
+  if [[ -f "$hops/network" ]]; then
+    net="$(head -n 1 "$hops/network")"
+    net="${net//$'\r'/}"
+    if [[ -n "${ZNS_NETWORK:-}" && "$ZNS_NETWORK" != "$net" ]]; then
+      echo "$hops/network is ${net}; ZNS_NETWORK is ${ZNS_NETWORK}" >&2
+      exit 1
+    fi
+  elif [[ -n "${ZNS_NETWORK:-}" ]]; then
+    net="$ZNS_NETWORK"
+  else
+    echo "no $hops/network; run this once with ZNS_NETWORK=mainnet or ZNS_NETWORK=testnet" >&2
+    exit 1
+  fi
+  if ! versions_networks | grep -qxF -- "$net"; then
+    echo "network ${net} is not in versions.toml networks" >&2
+    exit 1
+  fi
+  if [[ ! -f "$hops/network" ]]; then
+    mkdir -p "$hops"
+    printf '%s\n' "$net" >"$hops/network"
+  fi
+  printf '%s\n' "$net"
+}
 
 hops_root() {
   if [[ -n "${ZNS_HOPS:-}" ]]; then

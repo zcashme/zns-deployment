@@ -1,4 +1,9 @@
-# Build the guest and publish the artifacts.
+# Build each network's guest from one tag and publish the artifacts.
+#
+# A tag push builds every network in versions.toml networks and publishes
+# zns-<network>-* files in one release, with no upgrade document. Running
+# the workflow on a tag builds one network with an upgrade document from
+# that network's live guest, and adds those files to the same release.
 name: Release
 
 on:
@@ -7,6 +12,13 @@ on:
       - "v*"
   workflow_dispatch:
     inputs:
+      network:
+        description: Network of the source guest
+        required: true
+        type: choice
+        options:
+          - mainnet
+          - testnet
       from_measurement:
         description: Source guest measurement, 48 bytes hex
         required: true
@@ -34,12 +46,45 @@ permissions:
   attestations: write
 
 jobs:
-  release:
-    name: measured guest
+  networks:
+    name: networks
+    runs-on: ubuntu-24.04
+    outputs:
+      list: ${{ steps.read.outputs.list }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Read networks
+        id: read
+        env:
+          INPUT_NETWORK: ${{ github.event.inputs.network }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os, tomllib
+          networks = tomllib.loads(open("versions.toml").read())["networks"]
+          wanted = os.environ.get("INPUT_NETWORK", "").strip()
+          if wanted:
+              if wanted not in networks:
+                  raise SystemExit(f"network {wanted} is not in versions.toml networks")
+              networks = [wanted]
+          print("list=" + json.dumps(networks))
+          PY
+
+  build:
+    name: zns-${{ matrix.network }}
+    needs: networks
     runs-on: ubuntu-24.04-16core
+    strategy:
+      fail-fast: true
+      matrix:
+        network: ${{ fromJSON(needs.networks.outputs.list) }}
     env:
       SCCACHE_GHA_ENABLED: "on"
       RUSTC_WRAPPER: sccache
+      NETWORK: ${{ matrix.network }}
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -47,6 +92,7 @@ jobs:
           persist-credentials: false
 
       - name: Check upgrade inputs
+        if: github.event_name == 'workflow_dispatch'
         env:
           UPGRADE_FROM_MEASUREMENT: ${{ github.event.inputs.from_measurement }}
           UPGRADE_SEED_FINGERPRINT: ${{ github.event.inputs.seed_fingerprint }}
@@ -88,15 +134,11 @@ jobs:
       - name: Build guest image
         env:
           ZNS_RELEASE: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
-        run: ./image/build-image.sh
+        run: ./image/build-image.sh "$NETWORK"
 
       - name: sccache stats
         if: always()
         run: ${SCCACHE_PATH} --show-stats
-
-      - name: Hash artifacts
-        run: |
-          sha256sum build/zns-initrd.img build/bin/* | tee build/SHA256SUMS
 
       - name: Install SNP measurement tool
         run: ./launch/install-snp-measure.sh
@@ -105,6 +147,7 @@ jobs:
         run: ./launch/measure-guest.sh
 
       - name: Pack canonical upgrade document
+        if: github.event_name == 'workflow_dispatch'
         env:
           UPGRADE_FROM_MEASUREMENT: ${{ github.event.inputs.from_measurement }}
           UPGRADE_SEED_FINGERPRINT: ${{ github.event.inputs.seed_fingerprint }}
@@ -113,15 +156,38 @@ jobs:
           UPGRADE_FROM_GUEST_POLICY: ${{ github.event.inputs.from_guest_policy }}
         run: cargo run --quiet --release --locked --manifest-path launch/pack-upgrade/Cargo.toml
 
+      # Published names are zns-<network>-<name>, with a leading zns- dropped
+      # from <name>: build/bin/zns-mint becomes zns-mainnet-mint.
+      - name: Name release files
+        run: |
+          prefix="zns-${NETWORK}-"
+          out=build/release
+          rm -rf "$out"
+          mkdir -p "$out"
+          cp build/zns-initrd.img "$out/${prefix}initrd.img"
+          for path in build/bin/*; do
+            name="$(basename "$path")"
+            cp "$path" "$out/${prefix}${name#zns-}"
+          done
+          cp build/snp-measurement.txt "$out/${prefix}snp-measurement.txt"
+          if [[ -f build/upgrade.bin ]]; then
+            cp build/upgrade.bin "$out/${prefix}upgrade.bin"
+            cp build/upgrade.toml "$out/${prefix}upgrade.toml"
+          fi
+
       - name: Generate release manifest
         run: |
           python3 - <<'PY'
           import hashlib
           import json
+          import os
           import pathlib
           import subprocess
 
           root = pathlib.Path(".")
+          network = os.environ["NETWORK"]
+          prefix = f"zns-{network}-"
+          out = root / "build" / "release"
           pins = {}
           for line in (root / "versions.toml").read_text().splitlines():
               line = line.split("#", 1)[0].strip()
@@ -131,17 +197,10 @@ jobs:
               pins[key.strip()] = val.strip().strip('"')
 
           artifacts = []
-          for path in sorted((root / "build" / "bin").iterdir()):
-              if path.is_file():
+          for path in sorted(out.iterdir()):
+              if path.name.startswith(prefix) and not path.name.endswith((".txt", ".toml", ".bin")):
                   digest = hashlib.sha256(path.read_bytes()).hexdigest()
                   artifacts.append({"name": path.name, "sha256": digest})
-          initrd = root / "build" / "zns-initrd.img"
-          artifacts.append(
-              {
-                  "name": "zns-initrd.img",
-                  "sha256": hashlib.sha256(initrd.read_bytes()).hexdigest(),
-              }
-          )
 
           measurement = (root / "build" / "snp-measurement.txt").read_text().strip()
           text = subprocess.check_output(["./launch/print-guest-config.sh"], text=True)
@@ -151,7 +210,7 @@ jobs:
               params[key] = val
 
           manifest = {
-              "network": pins.get("network", ""),
+              "network": network,
               "mint_commit": pins.get("mint_commit", ""),
               "keygen_commit": pins.get("keygen_commit", ""),
               "migrate_commit": pins.get("migrate_commit", ""),
@@ -180,41 +239,45 @@ jobs:
               },
               "tee_measurement": measurement,
           }
-          out = root / "build" / "release-manifest.json"
-          out.write_text(json.dumps(manifest, indent=2) + "\n")
-          print(out.read_text())
+          path = out / f"{prefix}release-manifest.json"
+          path.write_text(json.dumps(manifest, indent=2) + "\n")
+          print(path.read_text())
           PY
 
-      - name: Attest artifacts
+      - name: Hash release files
+        run: |
+          cd build/release
+          sums="$(sha256sum zns-"${NETWORK}"-*)"
+          printf '%s\n' "$sums" | tee "zns-${NETWORK}-SHA256SUMS"
+
+      - name: Attest release files
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
-          subject-path: |
-            build/zns-initrd.img
-            build/bin/zebrad
-            build/bin/zns-forward
-            build/bin/zns-keygen
-            build/bin/zns-migrate
-            build/bin/zns-mint
-            build/bin/zns-supervise
-            build/release-manifest.json
-            build/SHA256SUMS
-            build/snp-measurement.txt
-            build/upgrade.bin
+          subject-path: build/release/zns-*
+
+      - name: Keep release files for publishing
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: zns-${{ matrix.network }}
+          path: build/release/zns-*
+          if-no-files-found: error
+
+  # Runs once, after every network built, so a release never has one
+  # network without the other.
+  publish:
+    name: publish
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Collect release files
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: zns-*
+          path: release
+          merge-multiple: true
 
       - name: Upload release assets
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
-          files: |
-            build/zns-initrd.img
-            build/bin/zebrad
-            build/bin/zns-forward
-            build/bin/zns-keygen
-            build/bin/zns-migrate
-            build/bin/zns-mint
-            build/bin/zns-supervise
-            build/release-manifest.json
-            build/SHA256SUMS
-            build/snp-measurement.txt
-            build/upgrade.bin
-            build/upgrade.toml
+          files: release/zns-*

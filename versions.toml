@@ -2,16 +2,16 @@
 # commit is what `cargo build --locked` compiles.
 
 mint_repo = "https://github.com/zcashme/zns-mint.git"
-mint_commit = "c28bc0d1d001ca6e564e0240878b8976b0273d5e"
+mint_commit = "b5b82904f9022b69c75c8e7c446223182e6da476"
 
 keygen_repo = "https://github.com/zcashme/zns-keygen.git"
-keygen_commit = "3d29f0a7627af286f26f138b3f2c93845f5b6abc"
+keygen_commit = "a31b400cf39bb3febafdba5168932e8a16050f55"
 
 migrate_repo = "https://github.com/zcashme/zns-migrate.git"
-migrate_commit = "a0af4564c703b3fb750aa2caeceee8c8fc0364ed"
+migrate_commit = "c411aa5d6ab7527ae2178487b34706ad9a1f0601"
 
 canon_repo = "https://github.com/zcashme/zns-canon.git"
-canon_commit = "fdcd854e8fae0053781194e3dc92b1ec7f8f1d23"
+canon_commit = "d127ec2f6f7b078e3c9f67f238e934c909e273fa"
 
 zebra_repo = "https://github.com/ZcashFoundation/zebra.git"
 zebra_commit = "6d1e414d6f55e4180d0e47baaa934bf97d5b4fec"
@@ -23,7 +23,9 @@ zebra_db_format = 29
 # state/v<zebra_db_format_previous>/<network> to state/v<zebra_db_format>.
 zebra_db_format_previous = 28
 
-network = "mainnet"
+# One image per network, from the same pins. A release builds each one.
+# zns-mint and zns-keygen choose the network at compile time.
+networks = ["mainnet", "testnet"]
 
 # zebrad at zebra_commit requires Rust 1.91.
 rust_version = "1.91.0"

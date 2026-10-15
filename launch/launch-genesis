@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
 # Boot the first guest.
 #
-#   sudo ZNS_STATE_IMG=/path/zns.img ZEBRA_STATE_IMG=/path/zebra.img \
-#     ./launch/launch-genesis v0.1.x
+#   sudo ZNS_NETWORK=testnet ZNS_STATE_IMG=/path/zns.img \
+#     ZEBRA_STATE_IMG=/path/zebra.img ./launch/launch-genesis v0.1.x
 #
-# Creates $ZNS_HOPS/upgrade-from-<tag> and transport-from-<tag>, records the
-# tag in $ZNS_HOPS/current, and starts QEMU in the foreground. The state
-# images must already exist. This command does not create or truncate them.
+# ZNS_NETWORK is needed only until $ZNS_HOPS/network records it. Unless
+# INITRD names a local build, fetch-release downloads and verifies that
+# network's initrd for the tag. Creates $ZNS_HOPS/upgrade-from-<tag> and
+# transport-from-<tag>, records the tag in $ZNS_HOPS/current, and starts
+# QEMU in the foreground. Run inside tmux: the console is then also written
+# to $ZNS_HOPS/logs/<tag>.console. The state images must already exist.
+# This command does not create or truncate them.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -32,17 +36,29 @@ if [[ ! -f "$ZNS_STATE_IMG" || ! -f "$ZEBRA_STATE_IMG" ]]; then
 fi
 
 hops="$(hops_root)"
-mkdir -p "$hops/upgrade-from-${version}" "$hops/transport-from-${version}"
-
+network="$(hops_network "$hops")"
 if [[ -f "$hops/current" ]]; then
   existing="$(read_current "$hops")"
   if [[ "$existing" != "$version" ]]; then
     echo "current is $existing; run migrate to move to another tag" >&2
     exit 1
   fi
-else
+fi
+
+if [[ -z "${INITRD:-}" ]]; then
+  "$HERE/fetch-release" "$version"
+  export INITRD="$hops/images/${version}/release/zns-initrd.img"
+fi
+if [[ ! -s "$INITRD" || -L "$INITRD" ]]; then
+  echo "missing $INITRD" >&2
+  exit 1
+fi
+
+mkdir -p "$hops/upgrade-from-${version}" "$hops/transport-from-${version}" "$hops/logs"
+if [[ ! -f "$hops/current" ]]; then
   write_current "$hops" "$version"
 fi
+
 
 name="zns-${version}"
 if pgrep -af qemu-system-x86_64 | grep -F -- "-name ${name} -nographic" >/dev/null; then
@@ -50,7 +66,29 @@ if pgrep -af qemu-system-x86_64 | grep -F -- "-name ${name} -nographic" >/dev/nu
   exit 1
 fi
 
+# The serial console is this terminal. When it is a tmux pane, tmux also
+# appends it to the console log, as launch-target does for a target.
+console="$hops/logs/${version}.console"
+pane=""
+here_tty="$(tty 2>/dev/null || true)"
+if [[ -n "$here_tty" ]] && command -v tmux >/dev/null; then
+  pane="$(operator_tmux list-panes -a -F '#{pane_id} #{pane_tty}' 2>/dev/null |
+    awk -v t="$here_tty" '$2 == t { print $1; exit }' || true)"
+fi
+if [[ -n "$pane" ]]; then
+  touch "$console"
+  if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+    chown "$SUDO_USER" "$console" || true
+  fi
+  operator_tmux pipe-pane -t "$pane" -o "cat >> $(printf '%q' "$console")"
+else
+  console="not written; this terminal is not a tmux pane"
+fi
+
+echo "network: $network"
 echo "current: $version"
+echo "initrd: $INITRD"
+echo "console: $console"
 echo "upgrade: $hops/upgrade-from-${version}"
 echo "transport: $hops/transport-from-${version}"
 echo "zns state: $ZNS_STATE_IMG"

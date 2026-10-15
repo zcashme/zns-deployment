@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
-# Build the measured guest from versions.toml.
+# Build the measured guest for one network from versions.toml.
+#
+#   ./image/build-image.sh mainnet
+#   ./image/build-image.sh testnet
 #
 # Fetches the pinned repos, builds zns-mint, zns-keygen, zns-migrate, and
 # zebrad, checks the Sapling parameters, and packs build/zns-initrd.img.
+# The network is one of versions.toml networks. It selects the zns-mint and
+# zns-keygen features and the Zebra network and ports, so each network is
+# its own image and its own measurement.
 #
 # Chain databases, the seed capsule, and logs are not in this image.
 set -euo pipefail
@@ -33,6 +39,16 @@ toml_get() {
   val="${val#\"}"
   val="${val%\"}"
   printf '%s' "$val"
+}
+
+toml_networks() {
+  local line
+  line="$(grep -E "^networks[[:space:]]*=" "$VERSIONS" | head -n 1 || true)"
+  if [[ -z "$line" ]]; then
+    echo "versions.toml is missing networks" >&2
+    exit 1
+  fi
+  grep -oE '"[a-z]+"' <<<"${line#*=}" | tr -d '"'
 }
 
 need() {
@@ -262,7 +278,15 @@ need zstd
 need protoc
 need cmake
 
-NETWORK="$(toml_get network)"
+if [[ "$#" -ne 1 ]]; then
+  echo "usage: build-image.sh <network>" >&2
+  exit 1
+fi
+NETWORK="$1"
+if ! toml_networks | grep -qxF -- "$NETWORK"; then
+  echo "network ${NETWORK} is not in versions.toml networks" >&2
+  exit 1
+fi
 case "$NETWORK" in
   testnet)
     zebra_network="Testnet"
@@ -282,14 +306,27 @@ case "$NETWORK" in
     ;;
 esac
 
-zebrad_config="$ROOT/image/configs/zebrad.toml"
-python3 - "$zebrad_config" "$zebra_network" "$zebra_p2p" "$zebra_rpc" "$zebra_indexer" <<'PY'
+mkdir -p "$BUILD"
+zebrad_config="$BUILD/zebrad.toml"
+python3 - "$ROOT/image/configs/zebrad.toml" "$zebrad_config" \
+  "$zebra_network" "$zebra_p2p" "$zebra_rpc" "$zebra_indexer" <<'PY'
 import sys
 import tomllib
 from pathlib import Path
 
-path, network, p2p, rpc, indexer = sys.argv[1:]
-data = tomllib.loads(Path(path).read_text())
+template, path, network, p2p, rpc, indexer = sys.argv[1:]
+text = Path(template).read_text()
+for key, value in (
+    ("@ZEBRA_NETWORK@", network),
+    ("@ZEBRA_P2P@", p2p),
+    ("@ZEBRA_RPC@", rpc),
+    ("@ZEBRA_INDEXER@", indexer),
+):
+    if text.count(key) != 1:
+        raise SystemExit(f"image/configs/zebrad.toml must name {key} once")
+    text = text.replace(key, value)
+Path(path).write_text(text)
+data = tomllib.loads(text)
 net = data.get("network", {})
 rpc_table = data.get("rpc", {})
 checks = (
@@ -300,7 +337,7 @@ checks = (
 )
 errors = [f"{name} is {got!r}, expected {want!r}" for name, got, want in checks if got != want]
 if errors:
-    raise SystemExit("image/configs/zebrad.toml\n" + "\n".join(errors))
+    raise SystemExit("build/zebrad.toml\n" + "\n".join(errors))
 PY
 
 CANON_COMMIT="$(toml_get canon_commit)"
@@ -408,7 +445,7 @@ python3 "$ROOT/image/install-guest.py" \
   --bin "$STAGE/usr/local/bin/zns-migrate" \
   --bin "$STAGE/usr/local/bin/zebrad"
 ln -sf kmod "$STAGE/usr/bin/insmod"
-install -m 0644 "$ROOT/image/configs/zebrad.toml" "$STAGE/etc/zebra/zebrad.toml"
+install -m 0644 "$zebrad_config" "$STAGE/etc/zebra/zebrad.toml"
 # One line, the release tag. The guest prints it on the serial console.
 # A release build sets ZNS_RELEASE. A checkout that is itself a tag uses that.
 release="${ZNS_RELEASE:-}"
@@ -495,6 +532,6 @@ if ((${#notes[@]})); then
 else
   : >"$INCOMPLETE"
 fi
-echo "wrote ${BUILD}/zns-initrd.img"
+echo "wrote ${BUILD}/zns-initrd.img for ${NETWORK}"
 echo "open gaps:"
 cat "$INCOMPLETE"

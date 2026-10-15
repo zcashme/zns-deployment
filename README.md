@@ -14,24 +14,32 @@ Memory size, the state disks, host port forwards, and 9p mounts are launch setti
 
 | Path | Role |
 | --- | --- |
-| `versions.toml` | Commits, toolchain, kernel, OVMF |
-| `image/build-image.sh` | Fetch pins, build binaries, write `build/zns-initrd.img` |
+| `versions.toml` | Networks, commits, toolchain, kernel, OVMF |
+| `image/build-image.sh` | Fetch pins, build one network's binaries, write `build/zns-initrd.img` |
 | `image/guest-debs.sha256` | BusyBox, kmod, and the shared libraries |
-| `image/configs/zebrad.toml` | Zebra config baked into the initrd |
+| `image/configs/zebrad.toml` | Zebra config baked into the initrd; the build fills in the network and ports |
 | `image/initramfs/scripts/init-premount/zns` | PID 1 |
 | `launch/guest-config.sh` | Settings shared by the measurement and the launch |
 | `launch/measure-guest.sh` | Expected measurement |
 | `launch/print-guest-config.sh` | Settings for the manifest and the upgrade packer |
 | `launch/launch-guest.sh` | QEMU command |
-| `launch/launch-genesis` | First guest, upgrade and transport directories mounted |
-| `launch/fetch-release` | Download one tag's initrd and upgrade files |
+| `launch/launch-genesis` | Fetch the release and boot the first guest, upgrade and transport directories mounted |
+| `launch/fetch-release` | Download and verify one tag's files for this host's network |
 | `launch/fetch-zebra-snapshot` | Download a Zebra snapshot this build can open |
 | `launch/install-zebra-snapshot` | Put that snapshot on a new target Zebra disk |
 | `launch/launch-target` | Boot the target guest against the live hop |
 | `launch/migrate` | Fetch the release, boot the target, publish the upgrade, record the tag after `receipt.bin` |
-| `.github/workflows/release.yml` | Build, measure, attest, upload |
+| `.github/workflows/release.yml` | Build, measure, and attest each network; publish one release |
 
-The hops directory keeps `current`, the tag of the live guest. It advances when a migration writes `receipt.bin`. A later `migrate` may name an older tag.
+The hops directory keeps `current`, the tag of the live guest. It advances when a migration writes `receipt.bin`. A later `migrate` may name an older tag. It also keeps `network`, the network this host serves.
+
+## Networks
+
+`versions.toml` lists `networks`. The same pins build one image per network: `zns-mint` and `zns-keygen` choose the network at compile time, and the image's Zebra config names it. Each network's image has its own measurement.
+
+A tag push builds every network and publishes one release. Each network's files are named `zns-<network>-*`, for example `zns-testnet-initrd.img`. Running the workflow on a tag with a source guest's values builds that guest's network again and adds `zns-<network>-upgrade.bin` and `zns-<network>-upgrade.toml`.
+
+A host serves one network. The first launch command run with `ZNS_NETWORK=mainnet` or `ZNS_NETWORK=testnet` records it in `network`, and later commands use the files for that network.
 
 ## Console
 
@@ -45,11 +53,12 @@ Zebra metrics are `127.0.0.1:9999/metrics`. Mint metrics are `127.0.0.1:9465/met
 
 Run this on the host, from a checkout of the release you are moving to. Signing in and out of GitHub is covered separately. The hops directory on this host is `/home/ubuntu/zns-hops`. The file `current` in that directory is the release that is live.
 
-The first guest is started once. Point it at the two disk images already on the host. This command does not create or replace them.
+The first guest is started once. Point it at the two disk images already on the host. This command does not create or replace them. It downloads and verifies the release's initrd for this host's network, and writes the console to `logs/<tag>.console` in the hops directory.
 
 ```bash
 tmux new -s zns-source
-sudo ZNS_STATE_IMG=/home/ubuntu/zns-v0.1.x-state.img \
+sudo ZNS_NETWORK=testnet \
+  ZNS_STATE_IMG=/home/ubuntu/zns-v0.1.x-state.img \
   ZEBRA_STATE_IMG=/home/ubuntu/zebra-state.img \
   ./launch/launch-genesis v0.1.x
 ```
