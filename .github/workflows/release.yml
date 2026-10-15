@@ -291,6 +291,27 @@ jobs:
           cp "published/${prefix}initrd.img" build/zns-initrd.img
           cp "published/${prefix}snp-measurement.txt" build/snp-measurement.txt
 
+      # pack-upgrade builds against build/src/zns-canon, which build-image.sh
+      # checks out in a build. This job does not build, so it checks out the
+      # same canon_commit itself.
+      - name: Check out zns-canon
+        run: |
+          canon_repo="$(sed -n 's/^canon_repo = "\(.*\)"/\1/p' versions.toml)"
+          canon_commit="$(sed -n 's/^canon_commit = "\(.*\)"/\1/p' versions.toml)"
+          test -n "$canon_repo"
+          test -n "$canon_commit"
+          git init -q build/src/zns-canon
+          git -C build/src/zns-canon fetch -q --depth 1 "$canon_repo" "$canon_commit"
+          git -C build/src/zns-canon checkout -q --detach FETCH_HEAD
+          test "$(git -C build/src/zns-canon rev-parse HEAD)" = "$canon_commit"
+
+      - name: Install build packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ca-certificates cmake curl git \
+            libssl-dev pkg-config protobuf-compiler python3 python3-venv zstd
+
       - name: Read Rust pin
         id: rust
         run: |
