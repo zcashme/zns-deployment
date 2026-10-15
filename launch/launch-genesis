@@ -23,10 +23,12 @@ if [[ "$#" -ne 1 ]]; then
   echo "usage: launch-genesis <v*-tag>" >&2
   exit 1
 fi
-if ! command -v tmux >/dev/null; then
-  echo "missing tmux" >&2
-  exit 1
-fi
+for cmd in tmux gzip cpio realpath; do
+  if ! command -v "$cmd" >/dev/null; then
+    echo "missing $cmd" >&2
+    exit 1
+  fi
+done
 
 version="$1"
 require_tag "$version"
@@ -38,6 +40,10 @@ if [[ -z "${ZNS_STATE_IMG:-}" || -z "${ZEBRA_STATE_IMG:-}" ]]; then
 fi
 if [[ ! -f "$ZNS_STATE_IMG" || ! -f "$ZEBRA_STATE_IMG" ]]; then
   echo "ZNS_STATE_IMG and ZEBRA_STATE_IMG must already exist" >&2
+  exit 1
+fi
+if [[ -L "$ZNS_STATE_IMG" || -L "$ZEBRA_STATE_IMG" ]]; then
+  echo "ZNS_STATE_IMG and ZEBRA_STATE_IMG must not be symlinks" >&2
   exit 1
 fi
 # The tmux session runs the launch from its own directory.
@@ -58,15 +64,18 @@ if [[ -z "${INITRD:-}" ]]; then
   "$HERE/fetch-release" "$version"
   INITRD="$hops/images/${version}/release/zns-initrd.img"
 fi
-INITRD="$(realpath "$INITRD")"
 if [[ ! -s "$INITRD" || -L "$INITRD" ]]; then
-  echo "missing $INITRD" >&2
+  echo "missing $INITRD, or it is a symlink" >&2
   exit 1
 fi
+INITRD="$(realpath "$INITRD")"
 # A local build skips the release checks. Its baked Zebra config still has to
 # name this host's network.
-built="$(gzip -dc "$INITRD" | cpio -i --quiet --to-stdout etc/zebra/zebrad.toml 2>/dev/null |
-  sed -n 's/^network = "\(.*\)"$/\1/p' | tr '[:upper:]' '[:lower:]')"
+if ! built="$(gzip -dc "$INITRD" | cpio -i --quiet --to-stdout etc/zebra/zebrad.toml |
+  sed -n 's/^network = "\(.*\)"$/\1/p' | tr '[:upper:]' '[:lower:]')"; then
+  echo "could not read etc/zebra/zebrad.toml from $INITRD" >&2
+  exit 1
+fi
 if [[ "$built" != "$network" ]]; then
   echo "$INITRD is built for ${built:-an unknown network}; this host is $network" >&2
   exit 1
@@ -88,6 +97,15 @@ if operator_tmux has-session -t zns-source 2>/dev/null; then
   exit 1
 fi
 
+# The session belongs to the operator and starts QEMU with sudo -n. Without
+# passwordless sudo it would die before its output could be logged.
+if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+  if ! sudo -u "$SUDO_USER" -- sudo -n true 2>/dev/null; then
+    echo "$SUDO_USER needs passwordless sudo: the zns-source session starts QEMU with sudo -n" >&2
+    exit 1
+  fi
+fi
+
 runner="$hops/logs/${version}.launch"
 {
   printf '%s\n' '#!/bin/bash'
@@ -96,6 +114,14 @@ runner="$hops/logs/${version}.launch"
   printf 'export INITRD=%q\n' "$INITRD"
   printf 'export ZNS_QEMU_NAME=%q\n' "$name"
   printf 'export ZNS_9P=%q\n' "upgrade|${hops}/upgrade-from-${version}|ro;transport|${hops}/transport-from-${version}|rw"
+  # sudo -n starts the session with a clean environment. These are the
+  # launch settings an operator may set; launch-guest.sh checks the measured
+  # ones (KERNEL, OVMF) against versions.toml.
+  for var in KERNEL OVMF MEM ZNS_MINT_FWD ZNS_ZEBRA_FWD; do
+    if [[ -n "${!var:-}" ]]; then
+      printf 'export %s=%q\n' "$var" "${!var}"
+    fi
+  done
   printf 'exec %q\n' "$HERE/launch-guest.sh"
 } >"$runner"
 chmod 755 "$runner"
@@ -120,8 +146,12 @@ echo "transport: $hops/transport-from-${version}"
 echo "zns state: $zns_img"
 echo "zebra state: $zebra_img"
 
-operator_tmux new-session -d -s zns-source "$session_cmd" \; \
-  pipe-pane -t zns-source "cat >> $(printf '%q' "$console")"
+if ! operator_tmux new-session -d -s zns-source "$session_cmd" \; \
+  pipe-pane -t zns-source "cat >> $(printf '%q' "$console")"; then
+  echo "could not start tmux session zns-source" >&2
+  tail -n 40 "$console" >&2 || true
+  exit 1
+fi
 sleep 2
 if ! pgrep -af qemu-system-x86_64 | grep -F -- "-name ${name} -nographic" >/dev/null; then
   echo "$name exited" >&2

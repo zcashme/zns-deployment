@@ -1,11 +1,12 @@
 # Build each network's guest from one tag and publish the artifacts.
 #
 # A tag push builds every network in versions.toml networks and publishes
-# zns-<network>-* files in one release, with no upgrade document. Running
-# the workflow on a tag builds one network with an upgrade document from
-# that network's live guest and adds only zns-<network>-upgrade.bin and
-# .toml to the same release. The image the tag push published stays; the
-# document's artifact_hash has to match it, which fetch-release checks.
+# zns-<network>-* files in one release, with no upgrade document.
+#
+# Running the workflow on a tag adds an upgrade document for one network.
+# It does not build: it downloads that tag's published, attested initrd and
+# measurement for the network and packs the document against those bytes,
+# then adds only zns-<network>-upgrade.bin and .toml to the release.
 name: Release
 
 on:
@@ -50,6 +51,7 @@ permissions:
 jobs:
   networks:
     name: networks
+    if: github.event_name == 'push'
     runs-on: ubuntu-24.04
     outputs:
       list: ${{ steps.read.outputs.list }}
@@ -61,17 +63,10 @@ jobs:
 
       - name: Read networks
         id: read
-        env:
-          INPUT_NETWORK: ${{ github.event.inputs.network }}
         run: |
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
-          import json, os, tomllib
+          import json, tomllib
           networks = tomllib.loads(open("versions.toml").read())["networks"]
-          wanted = os.environ.get("INPUT_NETWORK", "").strip()
-          if wanted:
-              if wanted not in networks:
-                  raise SystemExit(f"network {wanted} is not in versions.toml networks")
-              networks = [wanted]
           print("list=" + json.dumps(networks))
           PY
 
@@ -92,16 +87,6 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-
-      - name: Check upgrade inputs
-        if: github.event_name == 'workflow_dispatch'
-        env:
-          UPGRADE_FROM_MEASUREMENT: ${{ github.event.inputs.from_measurement }}
-          UPGRADE_SEED_FINGERPRINT: ${{ github.event.inputs.seed_fingerprint }}
-          UPGRADE_SOURCE_CAPSULE_HASH: ${{ github.event.inputs.source_capsule_hash }}
-          UPGRADE_SEQUENCE: ${{ github.event.inputs.sequence }}
-          UPGRADE_FROM_GUEST_POLICY: ${{ github.event.inputs.from_guest_policy }}
-        run: python3 launch/pack-upgrade-document.py --check
 
       - name: Install build packages
         run: |
@@ -148,20 +133,9 @@ jobs:
       - name: Compute expected SNP measurement
         run: ./launch/measure-guest.sh
 
-      - name: Pack canonical upgrade document
-        if: github.event_name == 'workflow_dispatch'
-        env:
-          UPGRADE_FROM_MEASUREMENT: ${{ github.event.inputs.from_measurement }}
-          UPGRADE_SEED_FINGERPRINT: ${{ github.event.inputs.seed_fingerprint }}
-          UPGRADE_SOURCE_CAPSULE_HASH: ${{ github.event.inputs.source_capsule_hash }}
-          UPGRADE_SEQUENCE: ${{ github.event.inputs.sequence }}
-          UPGRADE_FROM_GUEST_POLICY: ${{ github.event.inputs.from_guest_policy }}
-        run: cargo run --quiet --release --locked --manifest-path launch/pack-upgrade/Cargo.toml
-
       # Published names are zns-<network>-<name>, with a leading zns- dropped
       # from <name>: build/bin/zns-mint becomes zns-mainnet-mint.
       - name: Name release files
-        if: github.event_name != 'workflow_dispatch'
         run: |
           prefix="zns-${NETWORK}-"
           out=build/release
@@ -174,20 +148,7 @@ jobs:
           done
           cp build/snp-measurement.txt "$out/${prefix}snp-measurement.txt"
 
-      # A run on a tag publishes only the upgrade document, so the image a
-      # genesis host already booted is never replaced.
-      - name: Name upgrade files
-        if: github.event_name == 'workflow_dispatch'
-        run: |
-          prefix="zns-${NETWORK}-"
-          out=build/release
-          rm -rf "$out"
-          mkdir -p "$out"
-          cp build/upgrade.bin "$out/${prefix}upgrade.bin"
-          cp build/upgrade.toml "$out/${prefix}upgrade.toml"
-
       - name: Generate release manifest
-        if: github.event_name != 'workflow_dispatch'
         run: |
           python3 - <<'PY'
           import hashlib
@@ -261,7 +222,6 @@ jobs:
           PY
 
       - name: Hash release files
-        if: github.event_name != 'workflow_dispatch'
         run: |
           cd build/release
           sums="$(sha256sum zns-"${NETWORK}"-*)"
@@ -279,12 +239,104 @@ jobs:
           path: build/release/zns-*
           if-no-files-found: error
 
-  # Runs once, after every network built, so a release never has one
-  # network without the other.
+  # Packs an upgrade document against the image this tag already published.
+  # Rebuilding would only match if the build were byte-for-byte identical.
+  upgrade:
+    name: zns-${{ github.event.inputs.network }}-upgrade
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    env:
+      NETWORK: ${{ github.event.inputs.network }}
+      TAG: ${{ github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Check the tag and network
+        run: |
+          if [[ "$GITHUB_REF_TYPE" != tag || "$TAG" != v* ]]; then
+            echo "run this workflow on a v* tag, not ${GITHUB_REF}" >&2
+            exit 1
+          fi
+          if ! grep -E '^networks[[:space:]]*=' versions.toml | grep -qF "\"${NETWORK}\""; then
+            echo "network ${NETWORK} is not in versions.toml networks" >&2
+            exit 1
+          fi
+
+      - name: Check upgrade inputs
+        env:
+          UPGRADE_FROM_MEASUREMENT: ${{ github.event.inputs.from_measurement }}
+          UPGRADE_SEED_FINGERPRINT: ${{ github.event.inputs.seed_fingerprint }}
+          UPGRADE_SOURCE_CAPSULE_HASH: ${{ github.event.inputs.source_capsule_hash }}
+          UPGRADE_SEQUENCE: ${{ github.event.inputs.sequence }}
+          UPGRADE_FROM_GUEST_POLICY: ${{ github.event.inputs.from_guest_policy }}
+        run: python3 launch/pack-upgrade-document.py --check
+
+      - name: Download the published image
+        run: |
+          prefix="zns-${NETWORK}-"
+          mkdir -p published build
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -D published \
+            -p "${prefix}initrd.img" -p "${prefix}snp-measurement.txt"
+          identity="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/tags/${TAG}"
+          for name in "${prefix}initrd.img" "${prefix}snp-measurement.txt"; do
+            gh attestation verify "published/${name}" \
+              --repo "$GITHUB_REPOSITORY" \
+              --source-ref "refs/tags/${TAG}" \
+              --cert-identity "$identity"
+          done
+          cp "published/${prefix}initrd.img" build/zns-initrd.img
+          cp "published/${prefix}snp-measurement.txt" build/snp-measurement.txt
+
+      - name: Read Rust pin
+        id: rust
+        run: |
+          version="$(sed -n 's/^rust_version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' versions.toml | head -n 1)"
+          test -n "$version"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
+        with:
+          toolchain: ${{ steps.rust.outputs.version }}
+
+      - name: Pack canonical upgrade document
+        env:
+          UPGRADE_FROM_MEASUREMENT: ${{ github.event.inputs.from_measurement }}
+          UPGRADE_SEED_FINGERPRINT: ${{ github.event.inputs.seed_fingerprint }}
+          UPGRADE_SOURCE_CAPSULE_HASH: ${{ github.event.inputs.source_capsule_hash }}
+          UPGRADE_SEQUENCE: ${{ github.event.inputs.sequence }}
+          UPGRADE_FROM_GUEST_POLICY: ${{ github.event.inputs.from_guest_policy }}
+        run: cargo run --quiet --release --locked --manifest-path launch/pack-upgrade/Cargo.toml
+
+      - name: Name upgrade files
+        run: |
+          prefix="zns-${NETWORK}-"
+          mkdir -p build/release
+          cp build/upgrade.bin "build/release/${prefix}upgrade.bin"
+          cp build/upgrade.toml "build/release/${prefix}upgrade.toml"
+
+      - name: Attest upgrade files
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: build/release/zns-*
+
+      - name: Keep upgrade files for publishing
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: zns-${{ github.event.inputs.network }}-upgrade
+          path: build/release/zns-*
+          if-no-files-found: error
+
+  # Runs once, after every network built (or the upgrade was packed), so a
+  # release never has one network without the other.
   publish:
     name: publish
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build, upgrade]
+    if: ${{ !failure() && !cancelled() && startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-24.04
     steps:
       - name: Collect release files

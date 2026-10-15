@@ -37,9 +37,9 @@ The hops directory keeps `current`, the tag of the live guest. It advances when 
 
 `versions.toml` lists `networks`. The same pins build one image per network: `zns-mint` and `zns-keygen` choose the network at compile time, and the image's Zebra config names it. Each network's image has its own measurement.
 
-A tag push builds every network and publishes one release. Each network's files are named `zns-<network>-*`, for example `zns-testnet-initrd.img`. Running the workflow on a tag with a source guest's values builds that guest's network again and adds `zns-<network>-upgrade.bin` and `zns-<network>-upgrade.toml`.
+A tag push builds every network and publishes one release. Each network's files are named `zns-<network>-*`, for example `zns-testnet-initrd.img`. Running the workflow on a tag with a source guest's values and its network adds `zns-<network>-upgrade.bin` and `zns-<network>-upgrade.toml`. That run does not build: it packs the document against the initrd and measurement the tag already published.
 
-A host serves one network. The first launch command run with `ZNS_NETWORK=mainnet` or `ZNS_NETWORK=testnet` records it in `network`, and later commands use the files for that network.
+A host serves one network. The first launch command run with `ZNS_NETWORK=mainnet` or `ZNS_NETWORK=testnet` records it in `network`, and later commands use the files for that network. A hops directory created before networks has no `network` file. Run its next command once with `ZNS_NETWORK` set, for example `sudo ZNS_NETWORK=mainnet ./launch/migrate <tag>`.
 
 ## Console
 
@@ -51,7 +51,24 @@ Zebra metrics are `127.0.0.1:9999/metrics`. Mint metrics are `127.0.0.1:9465/met
 
 ## Moving a guest
 
-Run this on the host, from a checkout of the release you are moving to. Signing in and out of GitHub is covered separately. The hops directory on this host is `/home/ubuntu/zns-hops`. The file `current` in that directory is the release that is live.
+Run this on the host, from a checkout of the release you are moving to or launching: `git checkout <tag>`. Signing in and out of GitHub is covered separately. The hops directory on this host is `/home/ubuntu/zns-hops`. The file `current` in that directory is the release that is live.
+
+The release has the initrd but not the kernel and OVMF. `launch-guest.sh` boots `build/vmlinuz` and `build/OVMF.amdsev.fd` from this checkout and refuses them unless they match `versions.toml`. `./image/build-image.sh <network>` writes both. Without a full build, take them from the pinned Ubuntu packages:
+
+```bash
+pin() { sed -n "s/^$1 = \"\(.*\)\"/\1/p" versions.toml; }
+mkdir -p build/debs
+curl -fsSL -o build/debs/kernel.deb "https://archive.ubuntu.com/ubuntu/$(pin kernel_image_deb)"
+curl -fsSL -o build/debs/ovmf.deb "https://archive.ubuntu.com/ubuntu/$(pin ovmf_deb)"
+echo "$(pin kernel_image_deb_sha256)  build/debs/kernel.deb" | sha256sum -c
+echo "$(pin ovmf_deb_sha256)  build/debs/ovmf.deb" | sha256sum -c
+dpkg-deb -x build/debs/kernel.deb build/debs/kernel
+dpkg-deb -x build/debs/ovmf.deb build/debs/ovmf
+cp "build/debs/kernel/boot/vmlinuz-$(pin kernel_version)" build/vmlinuz
+cp build/debs/ovmf/usr/share/ovmf/OVMF.amdsev.fd build/OVMF.amdsev.fd
+echo "$(pin kernel_vmlinuz_sha256)  build/vmlinuz" | sha256sum -c
+echo "$(pin ovmf_fd_sha256)  build/OVMF.amdsev.fd" | sha256sum -c
+```
 
 The first guest is started once. Point it at the two disk images already on the host. This command does not create or replace them. It downloads and verifies the release's initrd for this host's network, starts the guest in tmux session `zns-source`, and writes the console to `logs/<tag>.console` in the hops directory.
 
