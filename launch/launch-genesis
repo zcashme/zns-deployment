@@ -1,12 +1,18 @@
 #!/usr/bin/env bash
 # Boot the first guest.
 #
-#   sudo ZNS_STATE_IMG=/path/zns.img ZEBRA_STATE_IMG=/path/zebra.img \
-#     ./launch/launch-genesis v0.1.x
+#   sudo ZNS_NETWORK=testnet ZNS_STATE_IMG=/path/zns.img \
+#     ZEBRA_STATE_IMG=/path/zebra.img ./launch/launch-genesis v0.1.x
 #
-# Creates $ZNS_HOPS/upgrade-from-<tag> and transport-from-<tag>, records the
-# tag in $ZNS_HOPS/current, and starts QEMU in the foreground. The state
-# images must already exist. This command does not create or truncate them.
+# ZNS_NETWORK is needed only until $ZNS_HOPS/network records it. Unless
+# INITRD names a local build, fetch-release downloads and verifies that
+# network's initrd for the tag. Creates $ZNS_HOPS/upgrade-from-<tag> and
+# transport-from-<tag>, records the tag in $ZNS_HOPS/current, and starts
+# QEMU in the operator's tmux session zns-source, as launch-target does for
+# zns-target. The console is also appended to $ZNS_HOPS/logs/<tag>.console.
+# Attach with: tmux attach -t zns-source
+# The state images must already exist. This command does not create or
+# truncate them.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -17,6 +23,12 @@ if [[ "$#" -ne 1 ]]; then
   echo "usage: launch-genesis <v*-tag>" >&2
   exit 1
 fi
+for cmd in tmux gzip cpio realpath; do
+  if ! command -v "$cmd" >/dev/null; then
+    echo "missing $cmd" >&2
+    exit 1
+  fi
+done
 
 version="$1"
 require_tag "$version"
@@ -30,17 +42,47 @@ if [[ ! -f "$ZNS_STATE_IMG" || ! -f "$ZEBRA_STATE_IMG" ]]; then
   echo "ZNS_STATE_IMG and ZEBRA_STATE_IMG must already exist" >&2
   exit 1
 fi
+if [[ -L "$ZNS_STATE_IMG" || -L "$ZEBRA_STATE_IMG" ]]; then
+  echo "ZNS_STATE_IMG and ZEBRA_STATE_IMG must not be symlinks" >&2
+  exit 1
+fi
+# The tmux session runs the launch from its own directory.
+zns_img="$(realpath "$ZNS_STATE_IMG")"
+zebra_img="$(realpath "$ZEBRA_STATE_IMG")"
 
 hops="$(hops_root)"
-mkdir -p "$hops/upgrade-from-${version}" "$hops/transport-from-${version}"
-
+network="$(hops_network "$hops")"
 if [[ -f "$hops/current" ]]; then
   existing="$(read_current "$hops")"
   if [[ "$existing" != "$version" ]]; then
     echo "current is $existing; run migrate to move to another tag" >&2
     exit 1
   fi
-else
+fi
+
+if [[ -z "${INITRD:-}" ]]; then
+  "$HERE/fetch-release" "$version"
+  INITRD="$hops/images/${version}/release/zns-initrd.img"
+fi
+if [[ ! -s "$INITRD" || -L "$INITRD" ]]; then
+  echo "missing $INITRD, or it is a symlink" >&2
+  exit 1
+fi
+INITRD="$(realpath "$INITRD")"
+# A local build skips the release checks. Its baked Zebra config still has to
+# name this host's network.
+if ! built="$(gzip -dc "$INITRD" | cpio -i --quiet --to-stdout etc/zebra/zebrad.toml |
+  sed -n 's/^network = "\(.*\)"$/\1/p' | tr '[:upper:]' '[:lower:]')"; then
+  echo "could not read etc/zebra/zebrad.toml from $INITRD" >&2
+  exit 1
+fi
+if [[ "$built" != "$network" ]]; then
+  echo "$INITRD is built for ${built:-an unknown network}; this host is $network" >&2
+  exit 1
+fi
+
+mkdir -p "$hops/upgrade-from-${version}" "$hops/transport-from-${version}" "$hops/logs"
+if [[ ! -f "$hops/current" ]]; then
   write_current "$hops" "$version"
 fi
 
@@ -49,13 +91,73 @@ if pgrep -af qemu-system-x86_64 | grep -F -- "-name ${name} -nographic" >/dev/nu
   echo "$name is already running" >&2
   exit 1
 fi
+if operator_tmux has-session -t zns-source 2>/dev/null; then
+  echo "tmux session zns-source already exists and $name is not running" >&2
+  echo "close that session, then run launch-genesis again" >&2
+  exit 1
+fi
 
+# The session belongs to the operator and starts QEMU with sudo -n. Without
+# passwordless sudo it would die before its output could be logged.
+if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+  if ! sudo -u "$SUDO_USER" -- sudo -n true 2>/dev/null; then
+    echo "$SUDO_USER needs passwordless sudo: the zns-source session starts QEMU with sudo -n" >&2
+    exit 1
+  fi
+fi
+
+runner="$hops/logs/${version}.launch"
+{
+  printf '%s\n' '#!/bin/bash'
+  printf 'export ZNS_STATE_IMG=%q\n' "$zns_img"
+  printf 'export ZEBRA_STATE_IMG=%q\n' "$zebra_img"
+  printf 'export INITRD=%q\n' "$INITRD"
+  printf 'export ZNS_QEMU_NAME=%q\n' "$name"
+  printf 'export ZNS_9P=%q\n' "upgrade|${hops}/upgrade-from-${version}|ro;transport|${hops}/transport-from-${version}|rw"
+  # sudo -n starts the session with a clean environment. These are the
+  # launch settings an operator may set; launch-guest.sh checks the measured
+  # ones (KERNEL, OVMF) against versions.toml.
+  for var in KERNEL OVMF MEM ZNS_MINT_FWD ZNS_ZEBRA_FWD; do
+    if [[ -n "${!var:-}" ]]; then
+      printf 'export %s=%q\n' "$var" "${!var}"
+    fi
+  done
+  printf 'exec %q\n' "$HERE/launch-guest.sh"
+} >"$runner"
+chmod 755 "$runner"
+
+# The session exists only while QEMU runs, so the log holds only the guest
+# console. A later launch of the same tag appends to it.
+console="$hops/logs/${version}.console"
+touch "$console"
+if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+  chown "$SUDO_USER" "$console" || true
+  session_cmd="exec sudo -n $(printf '%q' "$runner")"
+else
+  session_cmd="exec $(printf '%q' "$runner")"
+fi
+
+echo "network: $network"
 echo "current: $version"
+echo "initrd: $INITRD"
+echo "console: $console"
 echo "upgrade: $hops/upgrade-from-${version}"
 echo "transport: $hops/transport-from-${version}"
-echo "zns state: $ZNS_STATE_IMG"
-echo "zebra state: $ZEBRA_STATE_IMG"
+echo "zns state: $zns_img"
+echo "zebra state: $zebra_img"
 
-export ZNS_9P="upgrade|${hops}/upgrade-from-${version}|ro;transport|${hops}/transport-from-${version}|rw"
-export ZNS_QEMU_NAME="$name"
-exec "$HERE/launch-guest.sh"
+if ! operator_tmux new-session -d -s zns-source "$session_cmd" \; \
+  pipe-pane -t zns-source "cat >> $(printf '%q' "$console")"; then
+  echo "could not start tmux session zns-source" >&2
+  tail -n 40 "$console" >&2 || true
+  exit 1
+fi
+sleep 2
+if ! pgrep -af qemu-system-x86_64 | grep -F -- "-name ${name} -nographic" >/dev/null; then
+  echo "$name exited" >&2
+  tail -n 40 "$console" >&2 || true
+  operator_tmux kill-session -t zns-source 2>/dev/null || true
+  exit 1
+fi
+echo "$name is running in tmux session zns-source"
+echo "attach with: tmux attach -t zns-source"

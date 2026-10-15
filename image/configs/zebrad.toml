@@ -1,19 +1,20 @@
-# Copied into the guest at /etc/zebra/zebrad.toml.
-# Mainnet listeners match zns-mint and zns-keygen built without --features testnet.
+# build-image.sh fills the @...@ values for the network it builds and
+# copies the result into the guest at /etc/zebra/zebrad.toml.
+# The listeners match zns-mint and zns-keygen built for that network.
 # indexer_listen_addr requires zebrad built with --features indexer.
 # The indexer port is 8230 on mainnet and 18230 on testnet, matching what mint dials.
 
 [network]
-network = "Mainnet"
-listen_addr = "[::]:8233"
+network = "@ZEBRA_NETWORK@"
+listen_addr = "@ZEBRA_P2P@"
 
 [state]
 cache_dir = "/var/lib/zebra"
 ephemeral = false
 
 [rpc]
-listen_addr = "127.0.0.1:8232"
-indexer_listen_addr = "127.0.0.1:8230"
+listen_addr = "@ZEBRA_RPC@"
+indexer_listen_addr = "@ZEBRA_INDEXER@"
 enable_cookie_auth = false
 parallel_cpu_threads = 0
 

@@ -147,9 +147,16 @@ fi
 echo "live guest: $from"
 echo "target: $to"
 echo "tags are not ordered; a lower tag is a rollback"
+# A release without an upgrade document for this network cannot move a guest.
+# Check before pending is written, so a refusal leaves nothing behind.
+"$HERE/fetch-release" "$to"
+if [[ ! -s "$release_dir/upgrade.bin" ]]; then
+  echo "release $to has no upgrade document for $(hops_network "$hops")" >&2
+  echo "run the release workflow on $to with the live guest's values first" >&2
+  exit 1
+fi
 printf '%s\n' "$to" >"$pending"
 
-"$HERE/fetch-release" "$to"
 "$HERE/launch-target" "$to"
 
 if [[ -f "$upgrade/upgrade.bin" && -f "$upgrade/upgrade.toml" && -f "$upgrade/upgrade.bundle.jsonl" ]] \

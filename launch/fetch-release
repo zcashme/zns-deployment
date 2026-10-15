@@ -3,13 +3,20 @@
 #
 #   sudo ./launch/fetch-release v0.1.x
 #
-# Writes the initrd, upgrade.toml, upgrade.bin, and the attestation bundle
-# under $ZNS_HOPS/images/<tag>/release/. Does not boot a guest and does not
-# publish those files into a live upgrade directory.
+# Takes this host's network from $ZNS_HOPS/network and downloads that
+# network's files, zns-<network>-*. Writes them without the prefix under
+# $ZNS_HOPS/images/<tag>/release/: zns-initrd.img, snp-measurement.txt,
+# release-manifest.json, and, when the release has an upgrade document for
+# this network, upgrade.toml, upgrade.bin, and the attestation bundle.
+# Does not boot a guest and does not publish those files into a live
+# upgrade directory.
 #
-# upgrade.bin must be attested by this repo's release workflow on that tag.
-# upgrade.toml must be the same document. zns-initrd.img must match its
-# artifact_hash. Files already on disk are checked the same way.
+# Each file must be attested by this repo's release workflow on that tag.
+# The manifest must name this network, the measurement, and the initrd's
+# hash. upgrade.toml must be the same document as upgrade.bin, and its
+# artifact_hash and to_measurement must be this initrd and measurement.
+# Files already on disk are reused only when each one has the SHA-256 the
+# release publishes now, and they are verified again the same way.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -40,38 +47,88 @@ if ! operator_gh attestation verify --help >/dev/null 2>&1; then
 fi
 
 hops="$(hops_root)"
+network="$(hops_network "$hops")"
+prefix="zns-${network}-"
 release_dir="$hops/images/${tag}/release"
 mkdir -p "$release_dir"
 
-verify_release() {
-  local dir="$1" bin toml initrd verified identity
-  bin="$dir/upgrade.bin"
-  toml="$dir/upgrade.toml"
-  initrd="$dir/zns-initrd.img"
-  for path in "$bin" "$toml" "$initrd"; do
-    if [[ -L "$path" || ! -f "$path" ]]; then
-      echo "missing release file $path" >&2
-      exit 1
-    fi
-  done
+# Published name, then the name on this host.
+required=(
+  "${prefix}initrd.img zns-initrd.img"
+  "${prefix}snp-measurement.txt snp-measurement.txt"
+  "${prefix}release-manifest.json release-manifest.json"
+)
+upgrade=(
+  "${prefix}upgrade.bin upgrade.bin"
+  "${prefix}upgrade.toml upgrade.toml"
+)
+
+attest() {
+  local path="$1" out="$2" identity
   identity="https://github.com/${ZNS_REPO}/${SIGNER_WORKFLOW}@refs/tags/${tag}"
-  if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
-    chmod a+rx "$dir"
-    chmod a+r "$bin" "$toml" "$initrd"
-  fi
-  verified="$(mktemp)"
-  operator_gh attestation verify "$bin" \
+  operator_gh attestation verify "$path" \
     --repo "$ZNS_REPO" \
     --source-ref "refs/tags/${tag}" \
     --cert-identity "$identity" \
-    --format json >"$verified"
-  python3 - "$dir" "$tag" "$verified" "$dir/upgrade.bundle.jsonl" <<'PY'
+    --format json >"$out"
+}
+
+verify_release() {
+  # The cache check calls this inside an if, where set -e does not apply, so
+  # every step returns on failure itself.
+  local dir="$1" with_upgrade="$2" path verified
+  for path in "$dir/zns-initrd.img" "$dir/snp-measurement.txt" "$dir/release-manifest.json"; do
+    if [[ -L "$path" || ! -f "$path" ]]; then
+      echo "missing release file $path" >&2
+      return 1
+    fi
+  done
+  if [[ "$with_upgrade" -eq 1 ]]; then
+    for path in "$dir/upgrade.bin" "$dir/upgrade.toml"; do
+      if [[ -L "$path" || ! -f "$path" ]]; then
+        echo "missing release file $path" >&2
+        return 1
+      fi
+    done
+  fi
+  if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+    chmod a+rx "$dir" || return 1
+    chmod a+r "$dir"/* || return 1
+  fi
+  verified="$(mktemp -d)" || return 1
+  if ! attest "$dir/zns-initrd.img" "$verified/initrd.json" ||
+    ! attest "$dir/snp-measurement.txt" "$verified/measurement.json" ||
+    ! attest "$dir/release-manifest.json" "$verified/manifest.json"; then
+    rm -rf "$verified"
+    return 1
+  fi
+  if [[ "$with_upgrade" -eq 1 ]] && ! attest "$dir/upgrade.bin" "$verified/upgrade.json"; then
+    rm -rf "$verified"
+    return 1
+  fi
+  if ! python3 - "$dir" "$tag" "$network" "$with_upgrade" "$verified/upgrade.json" "$dir/upgrade.bundle.jsonl" <<'PY'
 import hashlib, json, pathlib, struct, sys, tomllib
 
-directory, tag, verified_path, bundle_path = sys.argv[1:]
+directory, tag, network, with_upgrade, verified_path, bundle_path = sys.argv[1:]
 root = pathlib.Path(directory)
-blob = (root / "upgrade.bin").read_bytes()
 initrd = (root / "zns-initrd.img").read_bytes()
+initrd_sha = hashlib.sha256(initrd).digest()
+measurement = (root / "snp-measurement.txt").read_text().strip()
+manifest = json.loads((root / "release-manifest.json").read_text())
+
+if manifest.get("network") != network:
+    raise SystemExit(f"release manifest network is {manifest.get('network')!r}, this host is {network}")
+if manifest.get("tee_measurement") != measurement:
+    raise SystemExit("release manifest tee_measurement does not match snp-measurement.txt")
+initrd_name = f"zns-{network}-initrd.img"
+listed = [a for a in manifest.get("artifacts", []) if a.get("name") == initrd_name]
+if len(listed) != 1 or listed[0].get("sha256") != initrd_sha.hex():
+    raise SystemExit(f"release manifest does not list this {initrd_name}")
+
+if with_upgrade != "1":
+    sys.exit(0)
+
+blob = (root / "upgrade.bin").read_bytes()
 file = tomllib.loads((root / "upgrade.toml").read_text())
 keys = {
     "version",
@@ -115,7 +172,8 @@ body = bytearray()
 body += struct.pack("<I", 1)
 body += struct.pack("<Q", file["sequence"])
 body += hex_field("from_measurement", 48)
-body += hex_field("to_measurement", 48)
+to_measurement = hex_field("to_measurement", 48)
+body += to_measurement
 body += struct.pack("<Q", policy("from_guest_policy"))
 body += struct.pack("<Q", policy("to_guest_policy"))
 body += hex_field("seed_fingerprint", 32)
@@ -127,9 +185,10 @@ body += struct.pack("<I", len(encoded))
 body += encoded
 if bytes(body) != blob:
     raise SystemExit("upgrade.toml does not match the attested upgrade.bin")
-digest = hashlib.sha256(initrd).digest()
-if digest != artifact:
+if initrd_sha != artifact:
     raise SystemExit("zns-initrd.img does not match the attested artifact_hash")
+if to_measurement.hex() != measurement:
+    raise SystemExit("upgrade document to_measurement does not match snp-measurement.txt")
 verified = json.loads(pathlib.Path(verified_path).read_text())
 if len(verified) != 1 or "attestation" not in verified[0]:
     raise SystemExit("gh attestation verify did not return the signed bundle")
@@ -137,20 +196,63 @@ bundle = verified[0]["attestation"]["bundle"]
 path = pathlib.Path(bundle_path)
 path.write_text(json.dumps(bundle, separators=(",", ":")) + "\n")
 PY
-  rm -f "$verified"
+  then
+    rm -rf "$verified"
+    return 1
+  fi
+  rm -rf "$verified"
 }
 
-assets_ready() {
-  local path
-  for path in "$release_dir/upgrade.bin" "$release_dir/upgrade.toml" "$release_dir/zns-initrd.img"; do
-    if [[ -L "$path" || ! -s "$path" ]]; then
-      return 1
+# One line per published file: name, then its sha256.
+published="$(operator_gh release view "$tag" -R "$ZNS_REPO" --json assets \
+  --jq '.assets[] | .name + " " + ((.digest // "") | ltrimstr("sha256:"))')"
+has_asset() {
+  awk -v n="$1" '$1 == n { found = 1 } END { exit !found }' <<<"$published"
+}
+published_sha() {
+  awk -v n="$1" '$1 == n { print $2; exit }' <<<"$published"
+}
+
+for entry in "${required[@]}"; do
+  if ! has_asset "${entry%% *}"; then
+    echo "release $tag has no ${entry%% *}" >&2
+    exit 1
+  fi
+done
+with_upgrade=0
+if has_asset "${upgrade[0]%% *}" || has_asset "${upgrade[1]%% *}"; then
+  for entry in "${upgrade[@]}"; do
+    if ! has_asset "${entry%% *}"; then
+      echo "release $tag has no ${entry%% *}" >&2
+      exit 1
     fi
   done
+  with_upgrade=1
+fi
+
+files=("${required[@]}")
+if [[ "$with_upgrade" -eq 1 ]]; then
+  files+=("${upgrade[@]}")
+fi
+
+# The workflow can run again on a tag and replace or add files, so a file on
+# disk is reused only when it has the hash the release publishes now.
+cache_matches() {
+  local entry local_path want got
+  for entry in "${files[@]}"; do
+    local_path="$release_dir/${entry#* }"
+    want="$(published_sha "${entry%% *}")"
+    [[ -n "$want" && -s "$local_path" && ! -L "$local_path" ]] || return 1
+    got="$(sha256sum "$local_path" | awk '{ print $1 }')"
+    [[ "$got" == "$want" ]] || return 1
+  done
+  if [[ "$with_upgrade" -eq 0 && -e "$release_dir/upgrade.bin" ]]; then
+    return 1
+  fi
 }
 
-if assets_ready && ( verify_release "$release_dir" ); then
-  echo "release files already in $release_dir"
+if cache_matches && verify_release "$release_dir" "$with_upgrade"; then
+  echo "${network} release files already in $release_dir"
   exit 0
 fi
 
@@ -159,16 +261,36 @@ trap 'rm -rf "$tmp"' EXIT
 if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
   chown "$SUDO_USER" "$tmp"
 fi
-operator_gh release download "$tag" -R "$ZNS_REPO" \
-  -p upgrade.toml -p upgrade.bin -p zns-initrd.img -D "$tmp"
-verify_release "$tmp"
-cp "$tmp/zns-initrd.img" "$release_dir/zns-initrd.img.partial"
-mv "$release_dir/zns-initrd.img.partial" "$release_dir/zns-initrd.img"
-cp "$tmp/upgrade.toml" "$release_dir/upgrade.toml"
-cp "$tmp/upgrade.bundle.jsonl" "$release_dir/upgrade.bundle.jsonl.partial"
-mv "$release_dir/upgrade.bundle.jsonl.partial" "$release_dir/upgrade.bundle.jsonl"
-cp "$tmp/upgrade.bin" "$release_dir/upgrade.bin.partial"
-mv "$release_dir/upgrade.bin.partial" "$release_dir/upgrade.bin"
+patterns=()
+for entry in "${files[@]}"; do
+  patterns+=(-p "${entry%% *}")
+done
+operator_gh release download "$tag" -R "$ZNS_REPO" "${patterns[@]}" -D "$tmp"
+for entry in "${files[@]}"; do
+  mv "$tmp/${entry%% *}" "$tmp/${entry#* }"
+done
+if ! verify_release "$tmp" "$with_upgrade"; then
+  echo "release $tag did not verify for $network" >&2
+  exit 1
+fi
+
+install_file() {
+  cp "$tmp/$1" "$release_dir/$1.partial"
+  mv "$release_dir/$1.partial" "$release_dir/$1"
+}
+rm -f "$release_dir/upgrade.bin" "$release_dir/upgrade.toml" "$release_dir/upgrade.bundle.jsonl"
+install_file zns-initrd.img
+install_file snp-measurement.txt
+install_file release-manifest.json
+if [[ "$with_upgrade" -eq 1 ]]; then
+  install_file upgrade.toml
+  install_file upgrade.bundle.jsonl
+  install_file upgrade.bin
+fi
 trap - EXIT
 rm -rf "$tmp"
-echo "fetched $tag into $release_dir"
+if [[ "$with_upgrade" -eq 1 ]]; then
+  echo "fetched $tag for $network with its upgrade document into $release_dir"
+else
+  echo "fetched $tag for $network into $release_dir; this release has no upgrade document for $network"
+fi

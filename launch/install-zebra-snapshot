@@ -32,6 +32,7 @@ for cmd in truncate mkfs.ext4 zstd tar; do
 done
 
 hops="$(hops_root)"
+network="$(hops_network "$hops")"
 img="$hops/images/${tag}/zebra-state.img"
 if [[ -L "$img" ]]; then
   echo "$img is a symlink; refusing to use it" >&2
@@ -73,10 +74,6 @@ mount -o loop "$partial" "$mnt"
 zstd -d -c "$archive" | tar -xf - -C "$mnt"
 db_major="$(grep '^db_major=' "$snapdir/latest" | head -n 1)"
 db_major="${db_major#db_major=}"
-network="$(grep -E '^network[[:space:]]*=' "$HERE/../versions.toml" | head -n 1 || true)"
-network="${network#*=}"
-network="${network//\"/}"
-network="${network//[[:space:]]/}"
 if [[ -z "$db_major" || -z "$network" || ! -d "$mnt/state/v${db_major}/${network}" ]]; then
   echo "snapshot archive has no state/v${db_major}/${network}" >&2
   exit 1

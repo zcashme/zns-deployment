@@ -58,12 +58,29 @@ if [[ ! -s "$initrd" || -L "$initrd" ]]; then
   echo "missing $initrd" >&2
   exit 1
 fi
+if [[ ! -s "$hops/images/${to}/release/upgrade.bin" ]]; then
+  echo "release $to has no upgrade document for $(hops_network "$hops")" >&2
+  echo "run the release workflow on $to with the live guest's values first" >&2
+  exit 1
+fi
 
 mkdir -p "$hops/upgrade-from-${to}" "$hops/transport-from-${to}" "$hops/logs"
 mkdir -p "$hops/images/${to}"
 
 zns_img="$hops/images/${to}/zns-state.img"
 zebra_img="$hops/images/${to}/zebra-state.img"
+
+# A rollback can name a tag whose guest still runs, for example as
+# zns-previous, or whose disks a genesis guest uses. Two guests must never
+# share a disk. This target, already running in zns-target, is the one
+# exception.
+for img in "$zns_img" "$zebra_img"; do
+  if pgrep -af qemu-system-x86_64 | grep -qF -- "file=${img}," &&
+    ! qemu_in_session zns-target "$to"; then
+    echo "$img is in use by a running guest; stop that guest before migrating to $to" >&2
+    exit 1
+  fi
+done
 
 create_image() {
   local path="$1" size="$2"
