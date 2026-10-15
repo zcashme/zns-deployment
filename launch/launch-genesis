@@ -53,6 +53,14 @@ if [[ ! -s "$INITRD" || -L "$INITRD" ]]; then
   echo "missing $INITRD" >&2
   exit 1
 fi
+# A local build skips the release checks. Its baked Zebra config still has to
+# name this host's network.
+built="$(gzip -dc "$INITRD" | cpio -i --quiet --to-stdout etc/zebra/zebrad.toml 2>/dev/null |
+  sed -n 's/^network = "\(.*\)"$/\1/p' | tr '[:upper:]' '[:lower:]')"
+if [[ "$built" != "$network" ]]; then
+  echo "$INITRD is built for ${built:-an unknown network}; this host is $network" >&2
+  exit 1
+fi
 
 mkdir -p "$hops/upgrade-from-${version}" "$hops/transport-from-${version}" "$hops/logs"
 if [[ ! -f "$hops/current" ]]; then
@@ -80,7 +88,7 @@ if [[ -n "$pane" ]]; then
   if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
     chown "$SUDO_USER" "$console" || true
   fi
-  operator_tmux pipe-pane -t "$pane" -o "cat >> $(printf '%q' "$console")"
+  operator_tmux pipe-pane -t "$pane" "cat >> $(printf '%q' "$console")"
 else
   console="not written; this terminal is not a tmux pane"
 fi
@@ -96,4 +104,11 @@ echo "zebra state: $ZEBRA_STATE_IMG"
 
 export ZNS_9P="upgrade|${hops}/upgrade-from-${version}|ro;transport|${hops}/transport-from-${version}|rw"
 export ZNS_QEMU_NAME="$name"
-exec "$HERE/launch-guest.sh"
+# QEMU runs as a child so the pipe can be closed when it exits. Otherwise this
+# pane's shell would keep writing into the console log.
+status=0
+"$HERE/launch-guest.sh" || status=$?
+if [[ -n "$pane" ]]; then
+  operator_tmux pipe-pane -t "$pane" || true
+fi
+exit "$status"

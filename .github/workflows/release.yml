@@ -196,11 +196,15 @@ jobs:
               key, val = line.split("=", 1)
               pins[key.strip()] = val.strip().strip('"')
 
+          # The initrd and every build/bin program, by their published names.
+          names = [f"{prefix}initrd.img"]
+          for path in sorted((root / "build" / "bin").iterdir()):
+              short = path.name.removeprefix("zns-")
+              names.append(f"{prefix}{short}")
           artifacts = []
-          for path in sorted(out.iterdir()):
-              if path.name.startswith(prefix) and not path.name.endswith((".txt", ".toml", ".bin")):
-                  digest = hashlib.sha256(path.read_bytes()).hexdigest()
-                  artifacts.append({"name": path.name, "sha256": digest})
+          for name in names:
+              digest = hashlib.sha256((out / name).read_bytes()).hexdigest()
+              artifacts.append({"name": name, "sha256": digest})
 
           measurement = (root / "build" / "snp-measurement.txt").read_text().strip()
           text = subprocess.check_output(["./launch/print-guest-config.sh"], text=True)
@@ -267,7 +271,7 @@ jobs:
   publish:
     name: publish
     needs: build
-    if: github.ref_type == 'tag'
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     steps:
       - name: Collect release files

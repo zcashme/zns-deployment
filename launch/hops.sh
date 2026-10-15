@@ -42,7 +42,8 @@ hops_network() {
   fi
   if [[ ! -f "$hops/network" ]]; then
     mkdir -p "$hops"
-    printf '%s\n' "$net" >"$hops/network"
+    printf '%s\n' "$net" >"$hops/network.next"
+    mv "$hops/network.next" "$hops/network"
   fi
   printf '%s\n' "$net"
 }
