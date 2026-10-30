@@ -29,6 +29,10 @@ Memory size, the state disks, host port forwards, and 9p mounts are launch setti
 | `launch/install-zebra-snapshot` | Put that snapshot on a new target Zebra disk |
 | `launch/launch-target` | Boot the target guest against the live hop |
 | `launch/migrate` | Fetch the release, boot the target, publish the upgrade, record the tag after `receipt.bin` |
+| `launch/prepare-host` | Install QEMU, sshfs, tmux, gh, and the pinned kernel and OVMF |
+| `launch/ssh-key-standby` | On the standby machine, create its backup SSH key and print the public key |
+| `launch/ssh-key-live` | On the live machine, authorize that standby public key |
+| `launch/backup` | Seal this release's capsule onto another machine and leave mint there stopped |
 | `.github/workflows/release.yml` | Build, measure, and attest each network; publish one release |
 
 The hops directory keeps `current`, the tag of the live guest. It advances when a migration writes `receipt.bin`. A later `migrate` may name an older tag. It also keeps `network`, the network this host serves.
@@ -37,7 +41,7 @@ The hops directory keeps `current`, the tag of the live guest. It advances when 
 
 `versions.toml` lists `networks`. The same pins build one image per network: `zns-mint` and `zns-keygen` choose the network at compile time, and the image's Zebra config names it. Each network's image has its own measurement.
 
-A tag push builds every network and publishes one release. Each network's files are named `zns-<network>-*`, for example `zns-testnet-initrd.img`. Running the workflow on a tag with a source guest's values and its network adds `zns-<network>-upgrade.bin` and `zns-<network>-upgrade.toml`. That run does not build: it packs the document against the initrd and measurement the tag already published.
+A tag push builds every network and publishes one release. Each network's files are named `zns-<network>-*`, for example `zns-testnet-initrd.img`. Running the workflow on a tag with a source guest's values and its network adds `zns-<network>-upgrade.bin` and `zns-<network>-upgrade.toml`. That run does not build: it packs the document against the initrd and measurement the tag already published. Running it with `from_measurement` set to that same measurement publishes `zns-<network>-backup.bin` and `zns-<network>-backup.toml` and leaves the upgrade document in place.
 
 A host serves one network. The first launch command run with `ZNS_NETWORK=mainnet` or `ZNS_NETWORK=testnet` records it in `network`, and later commands use the files for that network. A hops directory created before networks has no `network` file. Run its next command once with `ZNS_NETWORK` set, for example `sudo ZNS_NETWORK=mainnet ./launch/migrate <tag>`.
 
@@ -98,4 +102,60 @@ Leave the new guest running. Attach to the old one with `tmux attach -t zns-prev
 
 Attach to the live guest with `tmux attach -t zns-source`. Its console is also `/home/ubuntu/zns-hops/logs/v0.1.x.console`. Its metrics are `127.0.0.1:19465/metrics` and `127.0.0.1:19999/metrics`.
 
+A copy of this same release onto another machine is the backup below. `current` stays on this release.
+
 If `migrate` says the transport directory already has files, delete the files in `/home/ubuntu/zns-hops/transport-from-<old-tag>` and run `migrate` again. `current` stays on the old release until the move lands. Do not delete or recreate the live guest's disk images.
+
+## Preparing a host
+
+On a new machine, from a checkout of this release:
+
+```bash
+sudo ./launch/prepare-host
+```
+
+That installs QEMU, sshfs, tmux, gh, and the tools that format a disk and unpack a Zebra snapshot. It writes the pinned kernel and OVMF into `build/`. Signing in to GitHub is covered separately.
+
+## Backup
+
+A backup seals this release's capsule onto another machine you own. Both guests run that same release. The live mint stops for the handoff and starts again after the receipt. The standby mint stays down. `current` stays on this release.
+
+The live guest is one that was started on this tag, so it is mounted on `/home/ubuntu/zns-hops/upgrade-from-<tag>` and `transport-from-<tag>`. A guest that just finished `migrate` is still mounted on the previous tag's directories. Start it on this tag before a backup. The transport directory has no handshake files in it. When `publish` says it still has some, that handshake has finished, and those files are removed before `publish` is run again.
+
+1. On the standby machine, check out this same tag and run `sudo ./launch/prepare-host`. Signing in to GitHub is covered separately. Then print that machine's public key. The comment on the line is the standby hostname.
+
+```bash
+sudo ./launch/ssh-key-standby
+```
+
+2. On the live machine, install that line for the account the standby will log in as.
+
+```bash
+sudo ./launch/ssh-key-live '<the ssh-ed25519 line>'
+```
+
+SSH from the standby account to the live host then succeeds. The first connection confirms the live host key. `stand` uses that same account.
+
+3. On the live host, read the mint metrics. A guest started with `launch-genesis` serves them at `127.0.0.1:9465/metrics`. A guest `migrate` promoted serves them at `127.0.0.1:19465/metrics`.
+
+   `zns_mint_guest_info` carries `measurement` and `guest_policy`. `zns_mint_ceremony_info` carries `seed_fingerprint` and `capsule_hash`.
+
+4. Run the Release workflow on this tag. Set `network` to this host's network. Set `from_measurement` to that `measurement` and `from_guest_policy` to that `guest_policy`. Set `seed_fingerprint` and `source_capsule_hash` to those labels. Set `sequence` to the next integer, or `1` when this release has no upgrade document yet. The workflow packs `zns-<network>-backup.bin` for the initrd this tag already published. Wait until that file is on the release.
+
+5. On the standby machine, start the guest and leave it waiting. Replace the tag and the live host address.
+
+```bash
+sudo ./launch/backup stand v0.1.x <live-host>
+```
+
+The command mounts the live host's upgrade and transport directories over SSH and boots the guest in tmux session `zns-backup`. The console is `/home/ubuntu/zns-hops/logs/backup-<tag>.console`. Metrics are `127.0.0.1:29465/metrics` and `127.0.0.1:29999/metrics`. The ZNS disk is `/home/ubuntu/zns-hops/images/<tag>/backup-zns-state.img`. The Zebra disk is `backup-zebra-state.img` beside it, filled from a chain snapshot when that file is absent.
+
+6. On the live host, after that guest is up:
+
+```bash
+sudo ./launch/backup publish
+```
+
+7. On the standby console, wait until it logs `migration target finished`. The capsule on that disk is sealed to that machine. `migrate-source.hold` is on the disk, so mint stays down. On the live console, mint stops for the handoff, then the log says `same-release backup accepted; mint hold cleared` and mint starts again.
+
+To run mint on the standby later, stop that QEMU, mount `backup-zns-state.img`, delete `migrate-source.hold`, and start the guest. With the hold gone, mint starts once Zebra is ready and opens the capsule with that machine's sealing key.

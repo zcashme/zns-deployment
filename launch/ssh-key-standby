@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Standby machine: ensure this host's backup SSH key exists, then print it.
+#
+#   sudo ./launch/ssh-key-standby
+#
+# The key belongs to the account that invoked sudo. stand logs in to the
+# live host with that account. A missing key is created with no passphrase,
+# because the mount cannot prompt. The printed line is the argument to
+# ssh-key-live on the live machine. The comment is this machine's hostname.
+set -euo pipefail
+
+if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+  user="$SUDO_USER"
+elif [[ "$(id -u)" -eq 0 ]]; then
+  echo "run as the account that will SSH, or with sudo from that account" >&2
+  exit 1
+else
+  user="$(id -un)"
+fi
+home="$(getent passwd "$user" | cut -d: -f6)"
+if [[ -z "$home" || ! -d "$home" ]]; then
+  echo "no home directory for $user" >&2
+  exit 1
+fi
+
+run_as_user() {
+  if [[ "$(id -un)" == "$user" ]]; then
+    "$@"
+  else
+    sudo -u "$user" -- "$@"
+  fi
+}
+
+key="$home/.ssh/id_ed25519"
+pub="$key.pub"
+run_as_user mkdir -p "$home/.ssh"
+run_as_user chmod 700 "$home/.ssh"
+
+if [[ ! -f "$key" ]]; then
+  run_as_user ssh-keygen -t ed25519 -f "$key" -N "" -C "zns-backup@$(hostname)"
+  echo "created $key"
+else
+  echo "keeping $key"
+fi
+if [[ ! -f "$pub" ]]; then
+  run_as_user ssh-keygen -y -f "$key" | run_as_user tee "$pub" >/dev/null
+  run_as_user chmod 644 "$pub"
+fi
+
+echo "standby $(hostname) public key:"
+run_as_user cat "$pub"

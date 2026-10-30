@@ -4,7 +4,9 @@
 //! has passed /metrics, restart that process once three checks fail. Leave
 //! Zebra alone during its first sync. Start mint only while Zebra's /ready
 //! check is succeeding and the ceremony is complete. A migrate-source.hold
-//! file keeps mint stopped while a source migration is running or has finished.
+//! file keeps mint stopped. The source guest writes it before unsealing. A
+//! move to another release leaves it. A same-release backup removes it
+//! after the receipt is accepted.
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};

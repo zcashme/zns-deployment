@@ -6,15 +6,18 @@
 # Takes this host's network from $ZNS_HOPS/network and downloads that
 # network's files, zns-<network>-*. Writes them without the prefix under
 # $ZNS_HOPS/images/<tag>/release/: zns-initrd.img, snp-measurement.txt,
-# release-manifest.json, and, when the release has an upgrade document for
-# this network, upgrade.toml, upgrade.bin, and the attestation bundle.
+# release-manifest.json, and, when the release has them for this network,
+# the upgrade document and the same-release backup document. Each document
+# is upgrade.toml or backup.toml, the .bin beside it, and the attestation
+# bundle.
 # Does not boot a guest and does not publish those files into a live
 # upgrade directory.
 #
 # Each file must be attested by this repo's release workflow on that tag.
 # The manifest must name this network, the measurement, and the initrd's
-# hash. upgrade.toml must be the same document as upgrade.bin, and its
-# artifact_hash and to_measurement must be this initrd and measurement.
+# hash. Each document's toml must match its .bin, and its artifact_hash
+# and to_measurement must be this initrd and measurement. A backup
+# document's two measurements are equal.
 # Files already on disk are reused only when each one has the SHA-256 the
 # release publishes now, and they are verified again the same way.
 set -euo pipefail
@@ -62,6 +65,10 @@ upgrade=(
   "${prefix}upgrade.bin upgrade.bin"
   "${prefix}upgrade.toml upgrade.toml"
 )
+backup=(
+  "${prefix}backup.bin backup.bin"
+  "${prefix}backup.toml backup.toml"
+)
 
 attest() {
   local path="$1" out="$2" identity
@@ -76,7 +83,7 @@ attest() {
 verify_release() {
   # The cache check calls this inside an if, where set -e does not apply, so
   # every step returns on failure itself.
-  local dir="$1" with_upgrade="$2" path verified
+  local dir="$1" with_upgrade="$2" with_backup="$3" path verified
   for path in "$dir/zns-initrd.img" "$dir/snp-measurement.txt" "$dir/release-manifest.json"; do
     if [[ -L "$path" || ! -f "$path" ]]; then
       echo "missing release file $path" >&2
@@ -85,6 +92,14 @@ verify_release() {
   done
   if [[ "$with_upgrade" -eq 1 ]]; then
     for path in "$dir/upgrade.bin" "$dir/upgrade.toml"; do
+      if [[ -L "$path" || ! -f "$path" ]]; then
+        echo "missing release file $path" >&2
+        return 1
+      fi
+    done
+  fi
+  if [[ "$with_backup" -eq 1 ]]; then
+    for path in "$dir/backup.bin" "$dir/backup.toml"; do
       if [[ -L "$path" || ! -f "$path" ]]; then
         echo "missing release file $path" >&2
         return 1
@@ -106,10 +121,14 @@ verify_release() {
     rm -rf "$verified"
     return 1
   fi
-  if ! python3 - "$dir" "$tag" "$network" "$with_upgrade" "$verified/upgrade.json" "$dir/upgrade.bundle.jsonl" <<'PY'
+  if [[ "$with_backup" -eq 1 ]] && ! attest "$dir/backup.bin" "$verified/backup.json"; then
+    rm -rf "$verified"
+    return 1
+  fi
+  if ! python3 - "$dir" "$tag" "$network" "$with_upgrade" "$verified/upgrade.json" "$dir/upgrade.bundle.jsonl" "$with_backup" "$verified/backup.json" <<'PY'
 import hashlib, json, pathlib, struct, sys, tomllib
 
-directory, tag, network, with_upgrade, verified_path, bundle_path = sys.argv[1:]
+directory, tag, network, with_upgrade, verified_path, bundle_path, with_backup, backup_verified = sys.argv[1:]
 root = pathlib.Path(directory)
 initrd = (root / "zns-initrd.img").read_bytes()
 initrd_sha = hashlib.sha256(initrd).digest()
@@ -125,76 +144,81 @@ listed = [a for a in manifest.get("artifacts", []) if a.get("name") == initrd_na
 if len(listed) != 1 or listed[0].get("sha256") != initrd_sha.hex():
     raise SystemExit(f"release manifest does not list this {initrd_name}")
 
-if with_upgrade != "1":
-    sys.exit(0)
+def check_document(bin_name, toml_name, verified_file, bundle_out, same_release):
+    blob = (root / bin_name).read_bytes()
+    file = tomllib.loads((root / toml_name).read_text())
+    keys = {
+        "version",
+        "sequence",
+        "from_measurement",
+        "to_measurement",
+        "from_guest_policy",
+        "to_guest_policy",
+        "seed_fingerprint",
+        "source_capsule_hash",
+        "artifact_hash",
+        "release",
+    }
+    if set(file) != keys:
+        raise SystemExit(f"{toml_name} fields do not match the upgrade document")
+    if file["version"] != 1:
+        raise SystemExit(f"{toml_name} version is not 1")
+    if type(file["sequence"]) is not int or file["sequence"] < 0:
+        raise SystemExit(f"{toml_name} sequence is not an integer")
 
-blob = (root / "upgrade.bin").read_bytes()
-file = tomllib.loads((root / "upgrade.toml").read_text())
-keys = {
-    "version",
-    "sequence",
-    "from_measurement",
-    "to_measurement",
-    "from_guest_policy",
-    "to_guest_policy",
-    "seed_fingerprint",
-    "source_capsule_hash",
-    "artifact_hash",
-    "release",
-}
-if set(file) != keys:
-    raise SystemExit("upgrade.toml fields do not match the upgrade document")
-if file["version"] != 1:
-    raise SystemExit("upgrade.toml version is not 1")
-if type(file["sequence"]) is not int or file["sequence"] < 0:
-    raise SystemExit("upgrade.toml sequence is not an integer")
+    def hex_field(name, size):
+        raw = str(file[name]).strip().removeprefix("0x")
+        try:
+            data = bytes.fromhex(raw)
+        except ValueError:
+            raise SystemExit(f"{toml_name} {name} is not hex")
+        if len(data) != size or not any(data):
+            raise SystemExit(f"{toml_name} {name} must be {size} nonzero bytes")
+        return data
 
-def hex_field(name, size):
-    raw = str(file[name]).strip().removeprefix("0x")
-    try:
-        data = bytes.fromhex(raw)
-    except ValueError:
-        raise SystemExit(f"upgrade.toml {name} is not hex")
-    if len(data) != size or not any(data):
-        raise SystemExit(f"upgrade.toml {name} must be {size} nonzero bytes")
-    return data
+    def policy(name):
+        value = file[name]
+        if type(value) is not int or value <= 0:
+            raise SystemExit(f"{toml_name} {name} must be a nonzero integer")
+        return value
 
-def policy(name):
-    value = file[name]
-    if type(value) is not int or value <= 0:
-        raise SystemExit(f"upgrade.toml {name} must be a nonzero integer")
-    return value
+    release = file["release"]
+    if release != tag:
+        raise SystemExit(f"{bin_name} release is {release}, expected {tag}")
+    from_measurement = hex_field("from_measurement", 48)
+    to_measurement = hex_field("to_measurement", 48)
+    if same_release and from_measurement != to_measurement:
+        raise SystemExit("backup document from_measurement and to_measurement differ")
+    body = bytearray()
+    body += struct.pack("<I", 1)
+    body += struct.pack("<Q", file["sequence"])
+    body += from_measurement
+    body += to_measurement
+    body += struct.pack("<Q", policy("from_guest_policy"))
+    body += struct.pack("<Q", policy("to_guest_policy"))
+    body += hex_field("seed_fingerprint", 32)
+    body += hex_field("source_capsule_hash", 32)
+    artifact = hex_field("artifact_hash", 32)
+    body += artifact
+    encoded = release.encode()
+    body += struct.pack("<I", len(encoded))
+    body += encoded
+    if bytes(body) != blob:
+        raise SystemExit(f"{toml_name} does not match the attested {bin_name}")
+    if initrd_sha != artifact:
+        raise SystemExit(f"zns-initrd.img does not match the attested artifact_hash in {toml_name}")
+    if to_measurement.hex() != measurement:
+        raise SystemExit(f"{toml_name} to_measurement does not match snp-measurement.txt")
+    verified = json.loads(pathlib.Path(verified_file).read_text())
+    if len(verified) != 1 or "attestation" not in verified[0]:
+        raise SystemExit("gh attestation verify did not return the signed bundle")
+    bundle = verified[0]["attestation"]["bundle"]
+    pathlib.Path(bundle_out).write_text(json.dumps(bundle, separators=(",", ":")) + "\n")
 
-release = file["release"]
-if release != tag:
-    raise SystemExit(f"upgrade document release is {release}, expected {tag}")
-body = bytearray()
-body += struct.pack("<I", 1)
-body += struct.pack("<Q", file["sequence"])
-body += hex_field("from_measurement", 48)
-to_measurement = hex_field("to_measurement", 48)
-body += to_measurement
-body += struct.pack("<Q", policy("from_guest_policy"))
-body += struct.pack("<Q", policy("to_guest_policy"))
-body += hex_field("seed_fingerprint", 32)
-body += hex_field("source_capsule_hash", 32)
-artifact = hex_field("artifact_hash", 32)
-body += artifact
-encoded = release.encode()
-body += struct.pack("<I", len(encoded))
-body += encoded
-if bytes(body) != blob:
-    raise SystemExit("upgrade.toml does not match the attested upgrade.bin")
-if initrd_sha != artifact:
-    raise SystemExit("zns-initrd.img does not match the attested artifact_hash")
-if to_measurement.hex() != measurement:
-    raise SystemExit("upgrade document to_measurement does not match snp-measurement.txt")
-verified = json.loads(pathlib.Path(verified_path).read_text())
-if len(verified) != 1 or "attestation" not in verified[0]:
-    raise SystemExit("gh attestation verify did not return the signed bundle")
-bundle = verified[0]["attestation"]["bundle"]
-path = pathlib.Path(bundle_path)
-path.write_text(json.dumps(bundle, separators=(",", ":")) + "\n")
+if with_upgrade == "1":
+    check_document("upgrade.bin", "upgrade.toml", verified_path, bundle_path, False)
+if with_backup == "1":
+    check_document("backup.bin", "backup.toml", backup_verified, root / "backup.bundle.jsonl", True)
 PY
   then
     rm -rf "$verified"
@@ -229,10 +253,23 @@ if has_asset "${upgrade[0]%% *}" || has_asset "${upgrade[1]%% *}"; then
   done
   with_upgrade=1
 fi
+with_backup=0
+if has_asset "${backup[0]%% *}" || has_asset "${backup[1]%% *}"; then
+  for entry in "${backup[@]}"; do
+    if ! has_asset "${entry%% *}"; then
+      echo "release $tag has no ${entry%% *}" >&2
+      exit 1
+    fi
+  done
+  with_backup=1
+fi
 
 files=("${required[@]}")
 if [[ "$with_upgrade" -eq 1 ]]; then
   files+=("${upgrade[@]}")
+fi
+if [[ "$with_backup" -eq 1 ]]; then
+  files+=("${backup[@]}")
 fi
 
 # The workflow can run again on a tag and replace or add files, so a file on
@@ -249,9 +286,12 @@ cache_matches() {
   if [[ "$with_upgrade" -eq 0 && -e "$release_dir/upgrade.bin" ]]; then
     return 1
   fi
+  if [[ "$with_backup" -eq 0 && -e "$release_dir/backup.bin" ]]; then
+    return 1
+  fi
 }
 
-if cache_matches && verify_release "$release_dir" "$with_upgrade"; then
+if cache_matches && verify_release "$release_dir" "$with_upgrade" "$with_backup"; then
   echo "${network} release files already in $release_dir"
   exit 0
 fi
@@ -269,7 +309,7 @@ operator_gh release download "$tag" -R "$ZNS_REPO" "${patterns[@]}" -D "$tmp"
 for entry in "${files[@]}"; do
   mv "$tmp/${entry%% *}" "$tmp/${entry#* }"
 done
-if ! verify_release "$tmp" "$with_upgrade"; then
+if ! verify_release "$tmp" "$with_upgrade" "$with_backup"; then
   echo "release $tag did not verify for $network" >&2
   exit 1
 fi
@@ -279,6 +319,7 @@ install_file() {
   mv "$release_dir/$1.partial" "$release_dir/$1"
 }
 rm -f "$release_dir/upgrade.bin" "$release_dir/upgrade.toml" "$release_dir/upgrade.bundle.jsonl"
+rm -f "$release_dir/backup.bin" "$release_dir/backup.toml" "$release_dir/backup.bundle.jsonl"
 install_file zns-initrd.img
 install_file snp-measurement.txt
 install_file release-manifest.json
@@ -287,10 +328,18 @@ if [[ "$with_upgrade" -eq 1 ]]; then
   install_file upgrade.bundle.jsonl
   install_file upgrade.bin
 fi
+if [[ "$with_backup" -eq 1 ]]; then
+  install_file backup.toml
+  install_file backup.bundle.jsonl
+  install_file backup.bin
+fi
 trap - EXIT
 rm -rf "$tmp"
+note="fetched $tag for $network into $release_dir"
 if [[ "$with_upgrade" -eq 1 ]]; then
-  echo "fetched $tag for $network with its upgrade document into $release_dir"
-else
-  echo "fetched $tag for $network into $release_dir; this release has no upgrade document for $network"
+  note="$note with its upgrade document"
 fi
+if [[ "$with_backup" -eq 1 ]]; then
+  note="$note with its backup document"
+fi
+echo "$note"

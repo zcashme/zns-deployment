@@ -276,6 +276,31 @@ artifact_line() {
   grep '^artifact_hash ' "$1/upgrade.toml" 2>/dev/null || true
 }
 
+# The source done line is the sequence, both measurements, and the artifact
+# hash. A same-release backup is another line for the same initrd.
+document_line() {
+  dir="$1"
+  seq=$(grep '^sequence = ' "$dir/upgrade.toml" 2>/dev/null || true)
+  from=$(grep '^from_measurement = ' "$dir/upgrade.toml" 2>/dev/null || true)
+  to=$(grep '^to_measurement = ' "$dir/upgrade.toml" 2>/dev/null || true)
+  art=$(grep '^artifact_hash = ' "$dir/upgrade.toml" 2>/dev/null || true)
+  if [ -z "$seq" ] || [ -z "$from" ] || [ -z "$to" ] || [ -z "$art" ]; then
+    return 0
+  fi
+  printf '%s|%s|%s|%s\n' "$seq" "$from" "$to" "$art"
+}
+
+same_release() {
+  toml="$1"
+  from_line=$(grep '^from_measurement = "' "$toml" 2>/dev/null || true)
+  to_line=$(grep '^to_measurement = "' "$toml" 2>/dev/null || true)
+  from=${from_line#*\"}
+  from=${from%\"}
+  to=${to_line#*\"}
+  to=${to%\"}
+  [ -n "$from" ] && [ "$from" = "$to" ]
+}
+
 ceremony_complete() {
   # The custody manifest is the completion record: keygen writes it at
   # finalize, and a migration target installs it beside the capsule.
@@ -299,8 +324,6 @@ already_done() {
   [ "$done_line" = "$line" ]
 }
 
-# Identity of an upgrade is artifact_hash. sequence is not compared, so a
-# rollback document is a different hash and is allowed to run.
 watch_target() {
   if [ "$target_wait" -eq 1 ]; then
     if channel_has /migration offer.bin attestation.bin encrypted_seed.bin \
@@ -365,9 +388,9 @@ watch_source() {
     return
   fi
   upgrade_ready "$sup" || return
-  artifact="$(artifact_line "$sup")"
-  [ -n "$artifact" ] || return
-  if already_done "$artifact"; then
+  identity="$(document_line "$sup")"
+  [ -n "$identity" ] || return
+  if already_done "$identity"; then
     return
   fi
   if channel_has "$strn" source.ready offer.bin attestation.bin encrypted_seed.bin \
@@ -395,8 +418,12 @@ watch_source() {
     --timeout-secs 86400 >>"$STATE_DIR/log/migrate.log" 2>&1
   status=$?
   if [ "$status" -eq 0 ]; then
-    printf '%s\n' "$artifact" >"$STATE_DIR/migrate-source.done.new" || return
+    printf '%s\n' "$identity" >"$STATE_DIR/migrate-source.done.new" || return
     mv "$STATE_DIR/migrate-source.done.new" "$STATE_DIR/migrate-source.done" || return
+    if same_release "$sup/upgrade.toml"; then
+      rm -f "$STATE_DIR/migrate-source.hold" || return
+      log "same-release backup accepted; mint hold cleared"
+    fi
     log "migration source finished"
     return
   fi
