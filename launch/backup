@@ -67,10 +67,6 @@ transport_clear() {
 # allow_other lets the root QEMU process read and write the mount.
 mount_live_dir() {
   local remote="$1" local_dir="$2" source
-  mkdir -p "$local_dir"
-  if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
-    chown "$SUDO_USER" "$local_dir"
-  fi
   if findmnt -n "$local_dir" >/dev/null 2>&1; then
     source="$(findmnt -n -o SOURCE "$local_dir")"
     if [[ "$source" == "$remote" ]]; then
@@ -79,6 +75,10 @@ mount_live_dir() {
     fi
     echo "$local_dir is already mounted from $source" >&2
     exit 1
+  fi
+  mkdir -p "$local_dir"
+  if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+    chown "$SUDO_USER" "$local_dir"
   fi
   if [[ -n "$(find "$local_dir" -mindepth 1 -print -quit)" ]]; then
     echo "$local_dir is not an empty mount point" >&2
@@ -246,8 +246,8 @@ stand() {
   mount_live_hops "$tag" "$2"
   refuse_odd_path "$upgrade"
   refuse_odd_path "$transport"
-  if [[ -f "$upgrade/upgrade.toml" ]] && ! measurements_match "$upgrade/upgrade.toml"; then
-    echo "$upgrade has a document whose measurements differ" >&2
+  if [[ -f "$upgrade/upgrade.toml" || -f "$upgrade/upgrade.bin" || -f "$upgrade/upgrade.bundle.jsonl" ]]; then
+    echo "$upgrade already has an upgrade document" >&2
     echo "remove upgrade.toml, upgrade.bin, and upgrade.bundle.jsonl, start stand, then publish" >&2
     exit 1
   fi
@@ -273,12 +273,6 @@ stand() {
       exit 1
     fi
   done
-  if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
-    if ! chown "$SUDO_USER:$SUDO_USER" "$next_transport"; then
-      chown "$SUDO_USER" "$next_transport"
-    fi
-  fi
-  chmod 700 "$next_transport"
   zns_img="$hops/images/${tag}/backup-zns-state.img"
   zebra_img="$hops/images/${tag}/backup-zebra-state.img"
   name="zns-backup"

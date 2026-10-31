@@ -79,40 +79,13 @@ check_cpu
 MINT_FWD="${ZNS_MINT_FWD:-9465}"
 ZEBRA_FWD="${ZNS_ZEBRA_FWD:-9999}"
 QEMU_NAME="${ZNS_QEMU_NAME:-zns-guest}"
-# zns-migrate creates channel files as mode 0600. A writable export is served
-# by virtfs-proxy-helper as the operator, so the standby account can read
-# those files. The socket stays in a root-only directory.
-proxy_helper_bin() {
-  local candidate
-  for candidate in \
-    /usr/lib/qemu/virtfs-proxy-helper \
-    /usr/lib/x86_64-linux-gnu/qemu/virtfs-proxy-helper \
-    /usr/libexec/virtfs-proxy-helper
-  do
-    if [[ -x "$candidate" ]]; then
-      printf '%s\n' "$candidate"
-      return
-    fi
-  done
-  if command -v virtfs-proxy-helper >/dev/null 2>&1; then
-    command -v virtfs-proxy-helper
-    return
-  fi
-  echo "missing virtfs-proxy-helper from qemu-system-common" >&2
-  exit 1
-}
-
-helper_pids=()
-cleanup_helpers() {
-  local pid
-  if ((${#helper_pids[@]})); then
-    for pid in "${helper_pids[@]}"; do
-      kill "$pid" 2>/dev/null || true
-    done
-  fi
-}
-trap cleanup_helpers EXIT INT TERM HUP
-
+# zns-migrate creates channel files as mode 0600. A writable export on a
+# filesystem that stores user xattrs uses host mode 0644. The transport
+# directory is mode 700 and owned by the operator, so that account can read
+# what root QEMU creates and other accounts cannot enter. An export without
+# user xattrs, such as the SSH mount, keeps security_model=none: those files
+# are created as the SSH user, and root can read them. A read-only export
+# keeps the files publish wrote.
 ninep_args=()
 if [[ -n "${ZNS_9P:-}" ]]; then
   IFS=';' read -r -a specs <<<"${ZNS_9P}"
@@ -126,42 +99,19 @@ if [[ -n "${ZNS_9P:-}" ]]; then
     fi
     if [[ "$mode" == "ro" ]]; then
       opt="local,id=fs${i},path=${path},security_model=none,readonly=on"
-    elif [[ "$mode" != "rw" ]]; then
+    elif [[ "$mode" == "rw" ]]; then
+      opt="local,id=fs${i},path=${path},security_model=none,writeout=immediate"
+      if python3 -c 'import os,sys
+p=sys.argv[1]
+n=b"user.zns-probe"
+os.setxattr(p, n, b"1")
+os.removexattr(p, n)
+' "$path" 2>/dev/null; then
+        opt="local,id=fs${i},path=${path},security_model=mapped-xattr,fmode=0644,dmode=0755,writeout=immediate"
+      fi
+    else
       echo "9p mode must be ro or rw: ${spec}" >&2
       exit 1
-    else
-      fs_uid="${SUDO_UID:-}"
-      fs_gid="${SUDO_GID:-}"
-      if [[ -z "$fs_uid" || "$fs_uid" == "0" ]]; then
-        fs_uid="$(stat -c %u "$path")"
-        fs_gid="$(stat -c %g "$path")"
-      fi
-      if [[ -z "$fs_uid" || "$fs_uid" == "0" ]]; then
-        echo "$path is owned by root; the operator account has to own a writable 9p export" >&2
-        exit 1
-      fi
-      mkdir -p /run/zns-9p
-      chmod 700 /run/zns-9p
-      sock="/run/zns-9p/$$-${i}.sock"
-      rm -f "$sock"
-      helper="$(proxy_helper_bin)" || exit 1
-      "$helper" -n -u "$fs_uid" -g "$fs_gid" -p "$path" -S "$sock" \
-        >>/run/zns-9p/helper.log 2>&1 &
-      helper_pids+=("$!")
-      ready=0
-      for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-        if [[ -S "$sock" ]]; then
-          ready=1
-          break
-        fi
-        sleep 0.1
-      done
-      if [[ "$ready" -ne 1 ]]; then
-        echo "virtfs-proxy-helper did not open $sock" >&2
-        exit 1
-      fi
-      chmod 600 "$sock"
-      opt="proxy,id=fs${i},socket=${sock},writeout=immediate"
     fi
     ninep_args+=(-fsdev "$opt" -device "virtio-9p-pci,fsdev=fs${i},mount_tag=${tag}")
     i=$((i + 1))
@@ -171,9 +121,7 @@ fi
 # zns-forward listens on the guest's external ports. Grafana on this host
 # scrapes mint at 127.0.0.1:${MINT_FWD}/metrics and Zebra at
 # 127.0.0.1:${ZEBRA_FWD}/metrics. These forwards are not part of the measurement.
-# qemu stays in the foreground so the serial console keeps this tty. The
-# proxy helpers are stopped when it exits.
-qemu-system-x86_64 \
+exec qemu-system-x86_64 \
   -enable-kvm \
   -machine "${MACHINE},confidential-guest-support=sev0,vmport=off" \
   -cpu "$CPU" \

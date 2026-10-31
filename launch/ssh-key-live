@@ -16,6 +16,10 @@ if [[ "$#" -ne 1 || -z "$1" ]]; then
   exit 1
 fi
 line="$1"
+if [[ "$line" == *$'\n'* || "$line" == *$'\r'* ]]; then
+  echo "public key must be one ssh-ed25519 line" >&2
+  exit 1
+fi
 read -r keytype blob _ <<<"$line"
 if [[ "$keytype" != "ssh-ed25519" || ! "$blob" =~ ^[A-Za-z0-9+/]+={0,2}$ ]]; then
   echo "public key must be one ssh-ed25519 line" >&2

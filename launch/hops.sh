@@ -107,16 +107,15 @@ write_current() {
 }
 
 # The standby account creates the handshake files over SSH. Root QEMU writes
-# the source side. The directory is mode 700 and owned by that account.
-# Root still creates files there. Other accounts cannot list or read them.
-# The upgrade directory stays root-owned.
+# the source side as mode 0644. The directory is mode 700 and owned by that
+# account, so that account can enter and read those files. Other accounts
+# cannot enter. The upgrade directory stays root-owned.
 open_transport_dir() {
-  local dir="$1" owner="${2:-}"
+  local dir="$1" owner="${2:-}" group
   mkdir -p "$dir"
   if [[ -n "$owner" && "$owner" != "root" ]]; then
-    if ! chown "$owner:$owner" "$dir"; then
-      chown "$owner" "$dir"
-    fi
+    group="$(id -gn "$owner")"
+    chown "$owner:$group" "$dir"
   fi
   chmod 700 "$dir"
 }
