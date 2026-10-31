@@ -54,7 +54,7 @@ run_as_user chmod 700 "$home/.ssh"
 run_as_user touch "$auth"
 run_as_user chmod 600 "$auth"
 
-hops="$(hops_root)"
+hops="$(hops_root)" || exit 1
 if [[ -f "$hops/current" ]]; then
   tag="$(read_current "$hops")"
   open_transport_dir "$hops/transport-from-${tag}" "$user"

@@ -100,7 +100,7 @@ mount_live_dir() {
 # live-host, or user@live-host. The remote directories are that user's
 # zns-hops/<network>/upgrade-from-<tag> and transport-from-<tag>.
 mount_live_hops() {
-  local tag="$1" spec="$2" live_user live_host remote_hops probe mount_root
+  local tag="$1" spec="$2" live_user live_host remote_hops probe mount_root net
   if [[ "$spec" == *@* ]]; then
     live_user="${spec%%@*}"
     live_host="${spec#*@}"
@@ -125,10 +125,11 @@ mount_live_hops() {
       exit 1
     fi
   fi
-  remote_hops="${ZNS_LIVE_HOPS:-/home/${live_user}/zns-hops}/$(require_network)"
+  net="$(require_network)" || exit 1
+  remote_hops="${ZNS_LIVE_HOPS:-/home/${live_user}/zns-hops}/${net}"
   # The live channel is mounted under this directory. Mode 700, owned by the
   # operator, so other accounts on this host cannot reach it. Root QEMU can.
-  mount_root="$(hops_root)/backup-mount"
+  mount_root="$(hops_root)/backup-mount" || exit 1
   mkdir -p "$mount_root/${tag}"
   if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
     chown "$SUDO_USER:$(id -gn "$SUDO_USER")" "$mount_root" "$mount_root/${tag}"
@@ -181,7 +182,7 @@ publish() {
   fi
   require_root
   refuse_state_disk_overrides
-  hops="$(hops_root)"
+  hops="$(hops_root)" || exit 1
   tag="$(read_current "$hops")"
   "$HERE/fetch-release" "$tag"
   release_dir="$hops/images/${tag}/release"
@@ -205,7 +206,7 @@ publish() {
     exit 1
   fi
   open_transport_dir "$transport" "${SUDO_USER:-}"
-  qname="$(guest_qemu_name "$tag")"
+  qname="$(guest_qemu_name "$tag")" || exit 1
   if pgrep -af qemu-system-x86_64 | grep -F -- "-name ${qname} -nographic" >/dev/null; then
     if ! pgrep -af qemu-system-x86_64 | grep -F -- "-name ${qname} -nographic" | grep -qF -- "path=${upgrade}," \
       || ! pgrep -af qemu-system-x86_64 | grep -F -- "-name ${qname} -nographic" | grep -qF -- "path=${transport},"; then
@@ -238,7 +239,7 @@ publish() {
 
 stand() {
   local tag upgrade transport hops initrd zns_img zebra_img name session console runner running mnt
-  local next_upgrade next_transport mint_fwd zebra_fwd session_cmd standard
+  local next_upgrade next_transport mint_fwd zebra_fwd session_cmd standard ports net
   if [[ "$#" -ne 2 ]]; then
     usage
   fi
@@ -252,7 +253,7 @@ stand() {
       exit 1
     fi
   done
-  hops="$(hops_root)"
+  hops="$(hops_root)" || exit 1
   mount_live_hops "$tag" "$2"
   refuse_odd_path "$upgrade"
   refuse_odd_path "$transport"
@@ -285,10 +286,11 @@ stand() {
   done
   zns_img="$hops/images/${tag}/backup-zns-state.img"
   zebra_img="$hops/images/${tag}/backup-zebra-state.img"
-  name="$(guest_qemu_name backup)"
-  session="$(guest_session backup)"
+  name="$(guest_qemu_name backup)" || exit 1
+  session="$(guest_session backup)" || exit 1
   console="$hops/logs/backup-${tag}.console"
-  read -r mint_fwd zebra_fwd <<<"$(network_ports backup)"
+  ports="$(network_ports backup)" || exit 1
+  read -r mint_fwd zebra_fwd <<<"$ports"
 
   running="$(pgrep -af qemu-system-x86_64 | grep -F -- "-name ${name} -nographic" || true)"
   if [[ -n "$running" ]]; then
@@ -424,7 +426,8 @@ stand() {
   fi
   echo "$name is running in tmux session ${session}"
   echo "attach with: tmux attach -t ${session}"
-  echo "on the live host, with this guest already up: sudo ZNS_NETWORK=$(require_network) ./launch/backup publish"
+  net="$(require_network)" || exit 1
+  echo "on the live host, with this guest already up: sudo ZNS_NETWORK=${net} ./launch/backup publish"
   echo "after the capsule is sealed this guest stops"
 }
 

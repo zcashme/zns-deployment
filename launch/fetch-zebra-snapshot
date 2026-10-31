@@ -32,8 +32,8 @@ for cmd in curl python3 sha256sum; do
   fi
 done
 
-hops="$(hops_root)"
-network="$(hops_network "$hops")"
+hops="$(hops_root)" || exit 1
+network="$(hops_network "$hops")" || exit 1
 db_format="$(grep -E '^zebra_db_format[[:space:]]*=' "$ROOT/versions.toml" | head -n 1 || true)"
 db_format="${db_format#*=}"
 db_format="${db_format//\"/}"

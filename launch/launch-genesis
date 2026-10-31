@@ -50,8 +50,8 @@ fi
 zns_img="$(realpath "$ZNS_STATE_IMG")"
 zebra_img="$(realpath "$ZEBRA_STATE_IMG")"
 
-hops="$(hops_root)"
-network="$(hops_network "$hops")"
+hops="$(hops_root)" || exit 1
+network="$(hops_network "$hops")" || exit 1
 if [[ -f "$hops/current" ]]; then
   existing="$(read_current "$hops")"
   if [[ "$existing" != "$version" ]]; then
@@ -87,9 +87,10 @@ if [[ ! -f "$hops/current" ]]; then
   write_current "$hops" "$version"
 fi
 
-name="$(guest_qemu_name "$version")"
-session="$(guest_session source)"
-read -r mint_fwd zebra_fwd <<<"$(network_ports genesis)"
+name="$(guest_qemu_name "$version")" || exit 1
+session="$(guest_session source)" || exit 1
+ports="$(network_ports genesis)" || exit 1
+read -r mint_fwd zebra_fwd <<<"$ports"
 if pgrep -af qemu-system-x86_64 | grep -F -- "-name ${name} -nographic" >/dev/null; then
   echo "$name is already running" >&2
   exit 1

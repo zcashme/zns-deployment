@@ -26,11 +26,11 @@ require_network() {
   local net="${ZNS_NETWORK:-}"
   if [[ "$net" != "mainnet" && "$net" != "testnet" ]]; then
     echo "set ZNS_NETWORK=mainnet or ZNS_NETWORK=testnet" >&2
-    exit 1
+    return 1
   fi
   if ! versions_networks | grep -qxF -- "$net"; then
     echo "network ${net} is not in versions.toml networks" >&2
-    exit 1
+    return 1
   fi
   printf '%s\n' "$net"
 }
@@ -46,8 +46,8 @@ hops_base() {
   if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
     home="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
     if [[ -z "$home" ]]; then
-      echo "could not find a home directory for $SUDO_USER" >&2
-      exit 1
+    echo "could not find a home directory for $SUDO_USER" >&2
+    return 1
     fi
   fi
   printf '%s\n' "$home/zns-hops"
@@ -69,13 +69,17 @@ refuse_shared_hops() {
     return 0
   fi
   echo "$base holds this network's current beside the other network" >&2
-  echo "stop that guest, then move current, images, logs, snapshots, upgrade-from-*, and transport-from-* into $base/${recorded:-$net}" >&2
-  exit 1
+  echo "stop that guest, then move network, current, images, logs, snapshots, upgrade-from-*, and transport-from-* into $base/${recorded:-$net}" >&2
+  return 1
 }
 
 hops_network() {
   local hops="$1" net recorded
-  net="$(require_network)"
+  net="$(require_network)" || return 1
+  if [[ -z "$hops" ]]; then
+    echo "network directory is missing" >&2
+    return 1
+  fi
   if [[ -f "$hops/network" ]]; then
     recorded="$(head -n 1 "$hops/network")"
     recorded="${recorded//$'\r'/}"
@@ -93,28 +97,31 @@ hops_network() {
 
 hops_root() {
   local base net
-  base="$(hops_base)"
-  net="$(require_network)"
-  refuse_shared_hops "$base" "$net"
+  base="$(hops_base)" || return 1
+  net="$(require_network)" || return 1
+  refuse_shared_hops "$base" "$net" || return 1
   printf '%s\n' "$base/$net"
 }
 
 # tmux session for this network: zns-mainnet-source, zns-testnet-backup.
 guest_session() {
-  local role="$1"
+  local role="$1" net
   case "$role" in
     source|target|previous|backup) ;;
     *)
       echo "unknown guest session ${role}" >&2
-      exit 1
+      return 1
       ;;
   esac
-  printf 'zns-%s-%s\n' "$(require_network)" "$role"
+  net="$(require_network)" || return 1
+  printf 'zns-%s-%s\n' "$net" "$role"
 }
 
 # QEMU -name for this network. The tag is the release, or backup.
 guest_qemu_name() {
-  printf 'zns-%s-%s\n' "$(require_network)" "$1"
+  local net
+  net="$(require_network)" || return 1
+  printf 'zns-%s-%s\n' "$net" "$1"
 }
 
 # Host ports. The guest still listens on 9465 and 9998.
@@ -122,7 +129,7 @@ guest_qemu_name() {
 # testnet uses 10465/10999, 20465/20999, and 30465/30999.
 network_ports() {
   local role="$1" net mint zebra
-  net="$(require_network)"
+  net="$(require_network)" || return 1
   case "${net}:${role}" in
     mainnet:genesis) mint=9465; zebra=9999 ;;
     mainnet:target) mint=19465; zebra=19999 ;;
@@ -132,7 +139,7 @@ network_ports() {
     testnet:backup) mint=30465; zebra=30999 ;;
     *)
       echo "no host ports for ${net} ${role}" >&2
-      exit 1
+      return 1
       ;;
   esac
   if [[ -n "${ZNS_MINT_FWD:-}" ]]; then
@@ -244,7 +251,7 @@ qemu_in_session() {
   local session="$1" tag="$2" pane pid cur hops=0 qname
   pane="$(operator_tmux display-message -p -t "$session" '#{pane_pid}' 2>/dev/null || true)"
   [[ "$pane" =~ ^[0-9]+$ ]] || return 1
-  qname="$(guest_qemu_name "$tag")"
+  qname="$(guest_qemu_name "$tag")" || return 1
   pid="$(pgrep -af qemu-system-x86_64 | grep -F -- "-name ${qname} -nographic" | head -n 1 || true)"
   pid="${pid%% *}"
   [[ "$pid" =~ ^[0-9]+$ ]] || return 1
@@ -267,9 +274,9 @@ qemu_in_session() {
 # current unchanged.
 claim_source_session() {
   local from="$1" to="$2" retired=0 source target previous
-  source="$(guest_session source)"
-  target="$(guest_session target)"
-  previous="$(guest_session previous)"
+  source="$(guest_session source)" || return 1
+  target="$(guest_session target)" || return 1
+  previous="$(guest_session previous)" || return 1
   if ! operator_tmux has-session -t "$target" 2>/dev/null; then
     if qemu_in_session "$source" "$to"; then
       echo "target qemu is already in tmux session ${source}"

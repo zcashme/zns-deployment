@@ -39,7 +39,7 @@ for cmd in truncate mkfs.ext4 tmux; do
   fi
 done
 
-hops="$(hops_root)"
+hops="$(hops_root)" || exit 1
 from="$(read_current "$hops")"
 if [[ "$to" == "$from" ]]; then
   echo "current is already $to" >&2
@@ -76,7 +76,7 @@ zebra_img="$hops/images/${to}/zebra-state.img"
 # zns-<network>-previous, or whose disks a genesis guest uses. Two guests
 # must never share a disk. This target, already running in
 # zns-<network>-target, is the one exception.
-target_session="$(guest_session target)"
+target_session="$(guest_session target)" || exit 1
 for img in "$zns_img" "$zebra_img"; do
   if pgrep -af qemu-system-x86_64 | grep -qF -- "file=${img}," &&
     ! qemu_in_session "$target_session" "$to"; then
@@ -111,8 +111,9 @@ else
   "$HERE/install-zebra-snapshot" "$to"
 fi
 
-read -r mint_fwd zebra_fwd <<<"$(network_ports target)"
-name="$(guest_qemu_name "$to")"
+ports="$(network_ports target)" || exit 1
+read -r mint_fwd zebra_fwd <<<"$ports"
+name="$(guest_qemu_name "$to")" || exit 1
 console="$hops/logs/${to}.console"
 pidfile="$hops/logs/${to}.pid"
 

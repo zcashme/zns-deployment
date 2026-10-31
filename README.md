@@ -43,7 +43,7 @@ Each network has its own directory under the hops directory, `zns-hops/mainnet` 
 
 A tag push builds every network and publishes one release. Each network's files are named `zns-<network>-*`, for example `zns-testnet-initrd.img`. Running the workflow on a tag with a source guest's values and its network adds `zns-<network>-upgrade.bin` and `zns-<network>-upgrade.toml`. That run does not build: it packs the document against the initrd and measurement the tag already published. Running it with `from_measurement` set to that same measurement publishes `zns-<network>-backup.bin` and `zns-<network>-backup.toml` and leaves the upgrade document in place.
 
-Every launch command takes `ZNS_NETWORK=mainnet` or `ZNS_NETWORK=testnet`. That selects the directory. A `current` file still sitting directly in `zns-hops` belongs to one network. Stop that guest, then move `current`, `images`, `logs`, `snapshots`, `upgrade-from-*`, and `transport-from-*` into `zns-hops/mainnet` or `zns-hops/testnet` before the next command for that network.
+Every launch command takes `ZNS_NETWORK=mainnet` or `ZNS_NETWORK=testnet`. That selects the directory. A `current` file still sitting directly in `zns-hops` belongs to one network. Stop that guest, then move `network`, `current`, `images`, `logs`, `snapshots`, `upgrade-from-*`, and `transport-from-*` into `zns-hops/mainnet` or `zns-hops/testnet` before the next command for that network.
 
 ## Console
 

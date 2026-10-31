@@ -31,8 +31,8 @@ for cmd in truncate mkfs.ext4 zstd tar; do
   fi
 done
 
-hops="$(hops_root)"
-network="$(hops_network "$hops")"
+hops="$(hops_root)" || exit 1
+network="$(hops_network "$hops")" || exit 1
 img="$hops/images/${tag}/zebra-state.img"
 if [[ -L "$img" ]]; then
   echo "$img is a symlink; refusing to use it" >&2

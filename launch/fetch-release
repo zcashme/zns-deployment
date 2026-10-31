@@ -49,8 +49,8 @@ if ! operator_gh attestation verify --help >/dev/null 2>&1; then
   exit 1
 fi
 
-hops="$(hops_root)"
-network="$(hops_network "$hops")"
+hops="$(hops_root)" || exit 1
+network="$(hops_network "$hops")" || exit 1
 prefix="zns-${network}-"
 release_dir="$hops/images/${tag}/release"
 mkdir -p "$release_dir"

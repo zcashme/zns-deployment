@@ -40,7 +40,7 @@ fi
 
 require_root
 
-hops="$(hops_root)"
+hops="$(hops_root)" || exit 1
 from="$(read_current "$hops")"
 if [[ "$to" == "$from" ]]; then
   echo "current is already $to" >&2
@@ -84,7 +84,7 @@ if [[ -s "$receipt" ]]; then
 fi
 
 target_pid() {
-  local pid="" line
+  local pid="" line qname
   if [[ -f "$pidfile" ]]; then
     pid="$(head -n 1 "$pidfile" || true)"
     if [[ -z "$pid" ]] || ! kill -0 "$pid" 2>/dev/null; then
@@ -92,7 +92,8 @@ target_pid() {
     fi
   fi
   if [[ -z "$pid" ]]; then
-    line="$(pgrep -af qemu-system-x86_64 | grep -F -- "-name zns-${to} -nographic" | head -n 1 || true)"
+    qname="$(guest_qemu_name "$to")" || return 1
+    line="$(pgrep -af qemu-system-x86_64 | grep -F -- "-name ${qname} -nographic" | head -n 1 || true)"
     pid="${line%% *}"
   fi
   if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
@@ -106,7 +107,7 @@ wait_for_receipt() {
   local pid="$1" target_session
   echo "waiting for $receipt"
   ticks=0
-  target_session="$(guest_session target)"
+  target_session="$(guest_session target)" || return 1
   trap "echo \"target qemu is still running (pid $pid) in tmux session ${target_session}\"; echo \"current stays $from until $receipt\"; exit 130" INT
   while [[ ! -s "$receipt" ]]; do
     if ! kill -0 "$pid" 2>/dev/null; then
