@@ -6,7 +6,9 @@
 //! check is succeeding and the ceremony is complete. A migrate-source.hold
 //! file keeps mint stopped. The source guest writes it before unsealing. A
 //! move to another release leaves it. A same-release backup removes it
-//! after the receipt is accepted.
+//! after the receipt is accepted. /run/backup-stopping keeps mint stopped
+//! as well. The backup guest writes that file before removing the hold and
+//! powering off. The file is on tmpfs, so the next boot does not have it.
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -39,6 +41,7 @@ const ZEBRA: &str = "/usr/local/bin/zebrad";
 const MINT: &str = "/usr/local/bin/zns-mint";
 const FORWARD: &str = "/usr/local/bin/zns-forward";
 const MIGRATE_HOLD: &str = "/state/migrate-source.hold";
+const BACKUP_STOPPING: &str = "/run/backup-stopping";
 
 extern "C" {
     fn kill(pid: i32, sig: i32) -> i32;
@@ -257,7 +260,7 @@ fn ceremony_complete() -> bool {
 }
 
 fn migration_holds_mint() -> bool {
-    std::fs::metadata(MIGRATE_HOLD).is_ok()
+    std::fs::metadata(MIGRATE_HOLD).is_ok() || std::fs::metadata(BACKUP_STOPPING).is_ok()
 }
 
 fn ensure_forward() {

@@ -4,7 +4,12 @@
 #   sudo ./launch/ssh-key-live 'ssh-ed25519 AAAA... zns-backup@standby-hostname'
 #
 # The account is the one that invoked sudo. The same line is not added twice.
+# The live transport directory is made writable by that account.
 set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=hops.sh
+source "$HERE/hops.sh"
 
 if [[ "$#" -ne 1 || -z "$1" ]]; then
   echo "usage: ssh-key-live <ssh-ed25519-public-key>" >&2
@@ -44,6 +49,13 @@ run_as_user mkdir -p "$home/.ssh"
 run_as_user chmod 700 "$home/.ssh"
 run_as_user touch "$auth"
 run_as_user chmod 600 "$auth"
+
+hops="$(hops_root)"
+if [[ -f "$hops/current" ]]; then
+  tag="$(read_current "$hops")"
+  open_transport_dir "$hops/transport-from-${tag}" "$user"
+  echo "transport directory is writable by $user: $hops/transport-from-${tag}"
+fi
 
 if run_as_user grep -qF -- "$blob" "$auth"; then
   echo "live $(hostname) already authorizes this key for $user"

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Seal this release's capsule onto another machine, and leave mint there stopped.
+# Seal this release's capsule onto another machine. The guest stops once the
+# capsule is sealed.
 #
 # The release workflow, run on this tag with from_measurement set to this
 # release's own measurement, publishes zns-<network>-backup.bin. The other
@@ -98,7 +99,7 @@ mount_live_dir() {
 # live-host, or user@live-host. The remote directories are that user's
 # zns-hops/upgrade-from-<tag> and transport-from-<tag>.
 mount_live_hops() {
-  local tag="$1" spec="$2" live_user live_host remote_hops
+  local tag="$1" spec="$2" live_user live_host remote_hops probe
   if [[ "$spec" == *@* ]]; then
     live_user="${spec%%@*}"
     live_host="${spec#*@}"
@@ -128,6 +129,13 @@ mount_live_hops() {
   transport="$(hops_root)/backup-mount/${tag}/transport"
   mount_live_dir "${live_user}@${live_host}:${remote_hops}/upgrade-from-${tag}" "$upgrade"
   mount_live_dir "${live_user}@${live_host}:${remote_hops}/transport-from-${tag}" "$transport"
+  probe="$transport/.zns-write-probe"
+  if ! touch "$probe" 2>/dev/null; then
+    echo "the standby account cannot create files in the live transport directory" >&2
+    echo "on the live host, run ./launch/ssh-key-live again" >&2
+    exit 1
+  fi
+  rm -f "$probe"
 }
 
 refuse_odd_path() {
@@ -187,6 +195,7 @@ publish() {
     echo "missing $upgrade or $transport; the live guest mounts these" >&2
     exit 1
   fi
+  open_transport_dir "$transport" "${SUDO_USER:-}"
   if pgrep -af qemu-system-x86_64 | grep -F -- "-name zns-${tag} -nographic" >/dev/null; then
     if ! pgrep -af qemu-system-x86_64 | grep -F -- "-name zns-${tag} -nographic" | grep -qF -- "path=${upgrade}," \
       || ! pgrep -af qemu-system-x86_64 | grep -F -- "-name zns-${tag} -nographic" | grep -qF -- "path=${transport},"; then
@@ -218,7 +227,7 @@ publish() {
 }
 
 stand() {
-  local tag upgrade transport hops initrd zns_img zebra_img name console runner running
+  local tag upgrade transport hops initrd zns_img zebra_img name console runner running mnt
   local next_upgrade next_transport mint_fwd zebra_fwd session_cmd standard
   if [[ "$#" -ne 2 ]]; then
     usage
@@ -253,6 +262,23 @@ stand() {
     "$hops/backup-next/${tag}/upgrade" "$hops/backup-next/${tag}/transport"
   next_upgrade="$hops/backup-next/${tag}/upgrade"
   next_transport="$hops/backup-next/${tag}/transport"
+  for dir in "$next_upgrade" "$next_transport"; do
+    if [[ -L "$dir" ]]; then
+      echo "$dir is a symlink" >&2
+      exit 1
+    fi
+    if [[ -n "$(find "$dir" -mindepth 1 -print -quit)" ]]; then
+      echo "$dir is not empty" >&2
+      echo "remove the files there and run stand again" >&2
+      exit 1
+    fi
+  done
+  if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+    if ! chown "$SUDO_USER:$SUDO_USER" "$next_transport"; then
+      chown "$SUDO_USER" "$next_transport"
+    fi
+  fi
+  chmod 700 "$next_transport"
   zns_img="$hops/images/${tag}/backup-zns-state.img"
   zebra_img="$hops/images/${tag}/backup-zebra-state.img"
   name="zns-backup"
@@ -282,9 +308,44 @@ stand() {
     fi
   done
 
+  if [[ -L "$zns_img" || ( -e "$zns_img" && ! -f "$zns_img" ) ]]; then
+    echo "$zns_img must be a regular file" >&2
+    exit 1
+  fi
+  if [[ -e "$zns_img" && -e "$hops/images/${tag}/zns-state.img" && "$zns_img" -ef "$hops/images/${tag}/zns-state.img" ]]; then
+    echo "$zns_img is the live ZNS disk" >&2
+    exit 1
+  fi
+  if [[ -e "$zns_img" ]]; then
+    mnt="$(mktemp -d)"
+    if ! mount -o loop "$zns_img" "$mnt"; then
+      rmdir "$mnt"
+      echo "could not read $zns_img" >&2
+      exit 1
+    fi
+    if [[ -f "$mnt/keys/zns_seed.capsule" || -f "$mnt/keys/zns_custody_manifest.toml" ]]; then
+      umount "$mnt"
+      rmdir "$mnt"
+      echo "$zns_img already has a capsule or a custody manifest" >&2
+      echo "this guest stays off" >&2
+      echo "start it with launch-genesis once the live guest is stopped and that session is closed" >&2
+      exit 1
+    fi
+    umount "$mnt"
+    rmdir "$mnt"
+    while read -r dev _; do
+      [[ -n "$dev" ]] || continue
+      losetup -d "$dev" 2>/dev/null || true
+    done < <(losetup -j "$zns_img" 2>/dev/null || true)
+  fi
+
   create_image "$zns_img" "$ZNS_IMG_SIZE"
   if [[ -L "$zebra_img" ]]; then
     echo "$zebra_img is a symlink; refusing to use it" >&2
+    exit 1
+  fi
+  if [[ -e "$zebra_img" && -e "$hops/images/${tag}/zebra-state.img" && "$zebra_img" -ef "$hops/images/${tag}/zebra-state.img" ]]; then
+    echo "$zebra_img is the live Zebra disk" >&2
     exit 1
   fi
   if [[ ! -e "$zebra_img" ]]; then

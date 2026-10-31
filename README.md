@@ -128,7 +128,7 @@ The live guest is one that was started on this tag, so it is mounted on `/home/u
 sudo ./launch/ssh-key-standby
 ```
 
-2. On the live machine, install that line for the account the standby will log in as.
+2. On the live machine, install that line for the account the standby will log in as. That command also makes `transport-from-<current>` writable by that account. `stand` checks that it can create a file there.
 
 ```bash
 sudo ./launch/ssh-key-live '<the ssh-ed25519 line>'
@@ -148,7 +148,7 @@ SSH from the standby account to the live host then succeeds. The first connectio
 sudo ./launch/backup stand v0.1.x <live-host>
 ```
 
-The command mounts the live host's upgrade and transport directories over SSH and boots the guest in tmux session `zns-backup`. The console is `/home/ubuntu/zns-hops/logs/backup-<tag>.console`. Metrics are `127.0.0.1:29465/metrics` and `127.0.0.1:29999/metrics`. The ZNS disk is `/home/ubuntu/zns-hops/images/<tag>/backup-zns-state.img`. The Zebra disk is `backup-zebra-state.img` beside it, filled from a chain snapshot when that file is absent.
+The command mounts the live host's upgrade and transport directories over SSH and boots the guest in tmux session `zns-backup`. A disk that already holds a capsule is refused, and that guest stays off. The console is `/home/ubuntu/zns-hops/logs/backup-<tag>.console`. Metrics are `127.0.0.1:29465/metrics` and `127.0.0.1:29999/metrics`. The ZNS disk is `/home/ubuntu/zns-hops/images/<tag>/backup-zns-state.img`. The Zebra disk is `backup-zebra-state.img` beside it, filled from a chain snapshot when that file is absent.
 
 6. On the live host, after that guest is up:
 

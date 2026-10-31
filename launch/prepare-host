@@ -48,6 +48,14 @@ apt-get install -y --no-install-recommends \
   tmux \
   zstd
 
+if [[ ! -x /usr/lib/qemu/virtfs-proxy-helper \
+  && ! -x /usr/lib/x86_64-linux-gnu/qemu/virtfs-proxy-helper \
+  && ! -x /usr/libexec/virtfs-proxy-helper ]] \
+  && ! command -v virtfs-proxy-helper >/dev/null 2>&1; then
+  echo "qemu-system-common did not install virtfs-proxy-helper" >&2
+  exit 1
+fi
+
 if ! gh attestation verify --help >/dev/null 2>&1; then
   echo "gh cannot verify attestations" >&2
   exit 1
