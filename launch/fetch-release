@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Download one release into the hops directory and verify it before accepting.
 #
-#   sudo ./launch/fetch-release v0.1.x
+#   sudo ZNS_NETWORK=testnet ./launch/fetch-release v0.1.x
 #
-# Takes this host's network from $ZNS_HOPS/network and downloads that
-# network's files, zns-<network>-*. Writes them without the prefix under
-# $ZNS_HOPS/images/<tag>/release/: zns-initrd.img, snp-measurement.txt,
+# ZNS_NETWORK selects $ZNS_HOPS/<network>. Downloads that network's files,
+# zns-<network>-*. Writes them without the prefix under
+# $ZNS_HOPS/<network>/images/<tag>/release/: zns-initrd.img, snp-measurement.txt,
 # release-manifest.json, and, when the release has them for this network,
 # the upgrade document and the same-release backup document. Each document
 # is upgrade.toml or backup.toml, the .bin beside it, and the attestation
@@ -49,8 +49,8 @@ if ! operator_gh attestation verify --help >/dev/null 2>&1; then
   exit 1
 fi
 
-hops="$(hops_root)"
-network="$(hops_network "$hops")"
+hops="$(hops_root)" || exit 1
+network="$(hops_network "$hops")" || exit 1
 prefix="zns-${network}-"
 release_dir="$hops/images/${tag}/release"
 mkdir -p "$release_dir"

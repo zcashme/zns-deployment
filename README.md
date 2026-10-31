@@ -35,7 +35,7 @@ Memory size, the state disks, host port forwards, and 9p mounts are launch setti
 | `launch/backup` | Seal this release's capsule onto another machine and leave mint there stopped |
 | `.github/workflows/release.yml` | Build, measure, and attest each network; publish one release |
 
-The hops directory keeps `current`, the tag of the live guest. It advances when a migration writes `receipt.bin`. A later `migrate` may name an older tag. It also keeps `network`, the network this host serves.
+Each network has its own directory under the hops directory, `zns-hops/mainnet` and `zns-hops/testnet`. `current` in that directory is the tag of the live guest for that network. It advances when a migration writes `receipt.bin`. A later `migrate` may name an older tag. The same directory holds that network's images, logs, snapshots, and upgrade and transport directories.
 
 ## Networks
 
@@ -43,19 +43,19 @@ The hops directory keeps `current`, the tag of the live guest. It advances when 
 
 A tag push builds every network and publishes one release. Each network's files are named `zns-<network>-*`, for example `zns-testnet-initrd.img`. Running the workflow on a tag with a source guest's values and its network adds `zns-<network>-upgrade.bin` and `zns-<network>-upgrade.toml`. That run does not build: it packs the document against the initrd and measurement the tag already published. Running it with `from_measurement` set to that same measurement publishes `zns-<network>-backup.bin` and `zns-<network>-backup.toml` and leaves the upgrade document in place.
 
-A host serves one network. The first launch command run with `ZNS_NETWORK=mainnet` or `ZNS_NETWORK=testnet` records it in `network`, and later commands use the files for that network. A hops directory created before networks has no `network` file. Run its next command once with `ZNS_NETWORK` set, for example `sudo ZNS_NETWORK=mainnet ./launch/migrate <tag>`.
+Every launch command takes `ZNS_NETWORK=mainnet` or `ZNS_NETWORK=testnet`. That selects the directory. A `current` file still sitting directly in `zns-hops` belongs to one network. Stop that guest, then move `network`, `current`, `images`, `logs`, `snapshots`, `upgrade-from-*`, and `transport-from-*` into `zns-hops/mainnet` or `zns-hops/testnet` before the next command for that network.
 
 ## Console
 
-`launch-genesis` starts the guest in tmux session `zns-source`. That session is the guest serial console, and it is also appended to `logs/<tag>.console` in the hops directory. Attach with `tmux attach -t zns-source`. Every 10 minutes the guest repeats the release it is running, whether Zebra is healthy and ready, the latest Zcash block, whether mint is up, memory available, and free space on the ZNS and Zebra disks.
+`launch-genesis` starts the guest in tmux session `zns-<network>-source`. That session is the guest serial console, and it is also appended to `logs/<tag>.console` in that network's directory. Attach with `tmux attach -t zns-mainnet-source` or `tmux attach -t zns-testnet-source`. Every 10 minutes the guest repeats the release it is running, whether Zebra is healthy and ready, the latest Zcash block, whether mint is up, memory available, and free space on the ZNS and Zebra disks.
 
 `Ctrl-a c` switches to the QEMU monitor. `quit` stops the VM, and `Ctrl-a c` returns to the guest. `Ctrl-a x` stops it directly. This is the host powering the VM off. The guest policy keeps that monitor from reading guest memory.
 
-Zebra metrics are `127.0.0.1:9999/metrics`. Mint metrics are `127.0.0.1:9465/metrics` after the ceremony completes. A target guest starts in tmux session `zns-target` and uses `19465` and `19999`. Its console is also written to a log file.
+Mainnet metrics are `127.0.0.1:9999/metrics` and `127.0.0.1:9465/metrics` after the ceremony completes. Testnet uses `10999` and `10465`. A target guest starts in tmux session `zns-<network>-target`. Mainnet uses `19465` and `19999`. Testnet uses `20465` and `20999`. Its console is also written to a log file.
 
 ## Moving a guest
 
-Run this on the host, from a checkout of the release you are moving to or launching: `git checkout <tag>`. Signing in and out of GitHub is covered separately. The hops directory on this host is `/home/ubuntu/zns-hops`. The file `current` in that directory is the release that is live.
+Run this on the host, from a checkout of the release you are moving to or launching: `git checkout <tag>`. Signing in and out of GitHub is covered separately. The hops directory on this host is `/home/ubuntu/zns-hops/<network>`. The file `current` in that directory is the release that is live for that network.
 
 The release has the initrd but not the kernel and OVMF. `launch-guest.sh` boots `build/vmlinuz` and `build/OVMF.amdsev.fd` from this checkout and refuses them unless they match `versions.toml`. `./image/build-image.sh <network>` writes both. Without a full build, take them from the pinned Ubuntu packages:
 
@@ -74,14 +74,14 @@ echo "$(pin kernel_vmlinuz_sha256)  build/vmlinuz" | sha256sum -c
 echo "$(pin ovmf_fd_sha256)  build/OVMF.amdsev.fd" | sha256sum -c
 ```
 
-The first guest is started once. Point it at the two disk images already on the host. This command does not create or replace them. It downloads and verifies the release's initrd for this host's network, starts the guest in tmux session `zns-source`, and writes the console to `logs/<tag>.console` in the hops directory.
+The first guest is started once. Point it at the two disk images already on the host. This command does not create or replace them. It downloads and verifies the release's initrd for this network, starts the guest in tmux session `zns-<network>-source`, and writes the console to `logs/<tag>.console` in that network's directory.
 
 ```bash
 sudo ZNS_NETWORK=testnet \
   ZNS_STATE_IMG=/home/ubuntu/zns-v0.1.x-state.img \
   ZEBRA_STATE_IMG=/home/ubuntu/zebra-state.img \
   ./launch/launch-genesis v0.1.x
-tmux attach -t zns-source
+tmux attach -t zns-testnet-source
 ```
 
 Detach from tmux with `Ctrl-b d` if you need the shell back; the guest keeps running. The console prints the Treasury address to fund. Wait until it prints `ceremony complete`. The next line is the access-code public key. Write that line down. Each later boot prints it once.
@@ -89,22 +89,22 @@ Detach from tmux with `Ctrl-b d` if you need the shell back; the guest keeps run
 To move that guest to another release, open a second terminal and run the command below. It stops immediately if that user is not logged in to GitHub.
 
 ```bash
-sudo ./launch/migrate v0.1.x
+sudo ZNS_NETWORK=testnet ./launch/migrate v0.1.x
 ```
 
-Replace `v0.1.x` with the release you are moving to. An older tag is a rollback, and the command allows it. Run the command as shown. The disk variables from the first command belong only there; if they are still set, `migrate` exits before it starts. The new ZNS disk is an empty file under `/home/ubuntu/zns-hops/images/<new-tag>/`. The new Zebra disk is filled from the newest chain snapshot on [snapshots.zfnd.org](https://snapshots.zfnd.org/) that this Zebra can open, when that file does not already exist. If none can, the command stops before creating the disk. The live guest's disks are not copied. A file already in that directory is left unchanged. The download stays in `/home/ubuntu/zns-hops/snapshots/`. After the new guest's Zebra is syncing, that download can be deleted. The Zebra disk image stays.
+Replace `v0.1.x` with the release you are moving to. An older tag is a rollback, and the command allows it. Run the command as shown. The disk variables from the first command belong only there; if they are still set, `migrate` exits before it starts. The new ZNS disk is an empty file under `/home/ubuntu/zns-hops/<network>/images/<new-tag>/`. The new Zebra disk is filled from the newest chain snapshot on [snapshots.zfnd.org](https://snapshots.zfnd.org/) that this Zebra can open, when that file does not already exist. If none can, the command stops before creating the disk. The live guest's disks are not copied. A file already in that directory is left unchanged. The download stays in `/home/ubuntu/zns-hops/<network>/snapshots/`. After the new guest's Zebra is syncing, that download can be deleted. The Zebra disk image stays.
 
-Wait until the command prints `current is now v0.1.x`. That is the point at which the move has landed. The new guest's tmux session is then `zns-source`, and its console says so. The guest you started from is `zns-previous`. Its console says the new version is up and that this one can be retired.
+Wait until the command prints `current is now v0.1.x`. That is the point at which the move has landed. The new guest's tmux session is then `zns-<network>-source`, and its console says so. The guest you started from is `zns-<network>-previous`. Its console says the new version is up and that this one can be retired.
 
-Pressing Ctrl-C while that command is still waiting stops only the wait. The new guest keeps running, in `zns-target`, and `current` stays on the old release. Run the same command again and it continues waiting. If it says `zns-previous` already exists, stop that guest, close the session, and run the same command again. If it says `zns-target` is missing, `current` stays on the old release unless the new guest is already the `zns-source` session.
+Pressing Ctrl-C while that command is still waiting stops only the wait. The new guest keeps running, in `zns-<network>-target`, and `current` stays on the old release. Run the same command again and it continues waiting. If it says `zns-<network>-previous` already exists, stop that guest, close the session, and run the same command again. If it says `zns-<network>-target` is missing, `current` stays on the old release unless the new guest is already the `zns-<network>-source` session.
 
-Leave the new guest running. Attach to the old one with `tmux attach -t zns-previous`, then `Ctrl-a c`, then `quit`, when you are ready to stop it. Detach with `Ctrl-b d`. The next move is another `migrate` from a second terminal. Do not restart the live guest for that.
+Leave the new guest running. Attach to the old one with `tmux attach -t zns-<network>-previous`, then `Ctrl-a c`, then `quit`, when you are ready to stop it. Detach with `Ctrl-b d`. The next move is another `migrate` from a second terminal. Do not restart the live guest for that.
 
-Attach to the live guest with `tmux attach -t zns-source`. Its console is also `/home/ubuntu/zns-hops/logs/v0.1.x.console`. Its metrics are `127.0.0.1:19465/metrics` and `127.0.0.1:19999/metrics`.
+Attach to the live guest with `tmux attach -t zns-<network>-source`. Its console is also `/home/ubuntu/zns-hops/<network>/logs/v0.1.x.console`. Mainnet metrics are `127.0.0.1:19465/metrics` and `127.0.0.1:19999/metrics`. Testnet metrics are `127.0.0.1:20465/metrics` and `127.0.0.1:20999/metrics`.
 
 A copy of this same release onto another machine is the backup below. `current` stays on this release.
 
-If `migrate` says the transport directory already has files, delete the files in `/home/ubuntu/zns-hops/transport-from-<old-tag>` and run `migrate` again. `current` stays on the old release until the move lands. Do not delete or recreate the live guest's disk images.
+If `migrate` says the transport directory already has files, delete the files in `/home/ubuntu/zns-hops/<network>/transport-from-<old-tag>` and run `migrate` again. `current` stays on the old release until the move lands. Do not delete or recreate the live guest's disk images.
 
 ## Preparing a host
 
@@ -120,7 +120,7 @@ That installs QEMU, sshfs, tmux, gh, and the tools that format a disk and unpack
 
 A backup seals this release's capsule onto another machine you own and then that guest stops. Both sides use this same release. The live mint stops for the handoff and starts again after the receipt. `current` stays on this release. The stopped disk is the copy. A later boot of this release on that machine opens the capsule.
 
-The live guest is one that was started on this tag, so it is mounted on `/home/ubuntu/zns-hops/upgrade-from-<tag>` and `transport-from-<tag>`. A guest that just finished `migrate` is still mounted on the previous tag's directories. Start it on this tag before a backup. The transport directory has no handshake files in it. When `publish` says it still has some, that handshake has finished, and those files are removed before `publish` is run again.
+The live guest is one that was started on this tag, so it is mounted on `/home/ubuntu/zns-hops/<network>/upgrade-from-<tag>` and `transport-from-<tag>`. A guest that just finished `migrate` is still mounted on the previous tag's directories. Start it on this tag before a backup. The transport directory has no handshake files in it. When `publish` says it still has some, that handshake has finished, and those files are removed before `publish` is run again.
 
 1. On the standby machine, check out this same tag and run `sudo ./launch/prepare-host`. Signing in to GitHub is covered separately. Then print that machine's public key. The comment on the line is the standby hostname.
 
@@ -131,7 +131,7 @@ sudo ./launch/ssh-key-standby
 2. On the live machine, install that line for the account the standby will log in as. That command also makes `transport-from-<current>` writable by that account. `stand` checks that it can create a file there.
 
 ```bash
-sudo ./launch/ssh-key-live '<the ssh-ed25519 line>'
+sudo ZNS_NETWORK=testnet ./launch/ssh-key-live '<the ssh-ed25519 line>'
 ```
 
 SSH from the standby account to the live host then succeeds. The first connection confirms the live host key. `stand` uses that same account.
@@ -145,15 +145,15 @@ SSH from the standby account to the live host then succeeds. The first connectio
 5. On the standby machine, start the guest and leave it waiting. Replace the tag and the live host address.
 
 ```bash
-sudo ./launch/backup stand v0.1.x <live-host>
+sudo ZNS_NETWORK=testnet ./launch/backup stand v0.1.x <live-host>
 ```
 
-The command mounts the live host's upgrade and transport directories over SSH and boots the guest in tmux session `zns-backup`. A disk that already holds a capsule is refused, and that guest stays off. The console is `/home/ubuntu/zns-hops/logs/backup-<tag>.console`. Metrics are `127.0.0.1:29465/metrics` and `127.0.0.1:29999/metrics`. The ZNS disk is `/home/ubuntu/zns-hops/images/<tag>/backup-zns-state.img`. The Zebra disk is `backup-zebra-state.img` beside it, filled from a chain snapshot when that file is absent.
+The command mounts the live host's upgrade and transport directories for this network over SSH and boots the guest in tmux session `zns-<network>-backup`. A disk that already holds a capsule is refused, and that guest stays off. The console is `/home/ubuntu/zns-hops/<network>/logs/backup-<tag>.console`. Mainnet metrics are `127.0.0.1:29465/metrics` and `127.0.0.1:29999/metrics`. Testnet metrics are `127.0.0.1:30465/metrics` and `127.0.0.1:30999/metrics`. The ZNS disk is `/home/ubuntu/zns-hops/<network>/images/<tag>/backup-zns-state.img`. The Zebra disk is `backup-zebra-state.img` beside it, filled from a chain snapshot when that file is absent.
 
 6. On the live host, after that guest is up:
 
 ```bash
-sudo ./launch/backup publish
+sudo ZNS_NETWORK=testnet ./launch/backup publish
 ```
 
 7. On the standby console, wait until it logs `migration target finished` and the guest stops. The capsule is on `backup-zns-state.img`, sealed to that machine. On the live console, mint stops for the handoff, then the log says `same-release backup accepted; mint hold cleared` and mint starts again.
@@ -161,8 +161,9 @@ sudo ./launch/backup publish
 To run this copy, stop the live guest and leave that session closed. On the backup machine, start this same release with those two disks:
 
 ```bash
-sudo ZNS_STATE_IMG=/home/ubuntu/zns-hops/images/v0.1.x/backup-zns-state.img \
-  ZEBRA_STATE_IMG=/home/ubuntu/zns-hops/images/v0.1.x/backup-zebra-state.img \
+sudo ZNS_NETWORK=testnet \
+  ZNS_STATE_IMG=/home/ubuntu/zns-hops/testnet/images/v0.1.x/backup-zns-state.img \
+  ZEBRA_STATE_IMG=/home/ubuntu/zns-hops/testnet/images/v0.1.x/backup-zebra-state.img \
   ./launch/launch-genesis v0.1.x
 ```
 

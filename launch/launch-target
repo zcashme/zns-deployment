@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 # Boot the migration target against the live guest's hop directories.
 #
-#   sudo ./launch/fetch-release v0.1.x
-#   sudo ./launch/launch-target v0.1.x
+#   sudo ZNS_NETWORK=testnet ./launch/fetch-release v0.1.x
+#   sudo ZNS_NETWORK=testnet ./launch/launch-target v0.1.x
 #
-# Reads the live tag from $ZNS_HOPS/current. Verifies that tag's release,
+# Reads the live tag from $ZNS_HOPS/<network>/current. Verifies that tag's release,
 # mounts that guest's upgrade and transport directories, plus an empty pair
-# for the following hop. QEMU runs in the operator's tmux session zns-target.
+# for the following hop. QEMU runs in the operator's tmux session
+# zns-<network>-target.
 # This command does not publish upgrade files and does not change current.
 #
-# State images are only $ZNS_HOPS/images/<tag>/*.img. The ZNS disk is created
+# State images are only $ZNS_HOPS/<network>/images/<tag>/*.img. The ZNS disk is created
 # empty when missing. The Zebra disk is filled from the latest chain snapshot
 # when missing. An existing file is left unchanged. Disk paths from the
 # environment are refused.
@@ -38,7 +39,7 @@ for cmd in truncate mkfs.ext4 tmux; do
   fi
 done
 
-hops="$(hops_root)"
+hops="$(hops_root)" || exit 1
 from="$(read_current "$hops")"
 if [[ "$to" == "$from" ]]; then
   echo "current is already $to" >&2
@@ -72,12 +73,13 @@ zns_img="$hops/images/${to}/zns-state.img"
 zebra_img="$hops/images/${to}/zebra-state.img"
 
 # A rollback can name a tag whose guest still runs, for example as
-# zns-previous, or whose disks a genesis guest uses. Two guests must never
-# share a disk. This target, already running in zns-target, is the one
-# exception.
+# zns-<network>-previous, or whose disks a genesis guest uses. Two guests
+# must never share a disk. This target, already running in
+# zns-<network>-target, is the one exception.
+target_session="$(guest_session target)" || exit 1
 for img in "$zns_img" "$zebra_img"; do
   if pgrep -af qemu-system-x86_64 | grep -qF -- "file=${img}," &&
-    ! qemu_in_session zns-target "$to"; then
+    ! qemu_in_session "$target_session" "$to"; then
     echo "$img is in use by a running guest; stop that guest before migrating to $to" >&2
     exit 1
   fi
@@ -109,9 +111,9 @@ else
   "$HERE/install-zebra-snapshot" "$to"
 fi
 
-mint_fwd="${ZNS_MINT_FWD:-19465}"
-zebra_fwd="${ZNS_ZEBRA_FWD:-19999}"
-name="zns-${to}"
+ports="$(network_ports target)" || exit 1
+read -r mint_fwd zebra_fwd <<<"$ports"
+name="$(guest_qemu_name "$to")" || exit 1
 console="$hops/logs/${to}.console"
 pidfile="$hops/logs/${to}.pid"
 
@@ -138,8 +140,8 @@ if [[ -n "$pid" ]]; then
   exit 0
 fi
 
-if operator_tmux has-session -t zns-target 2>/dev/null; then
-  echo "tmux session zns-target already exists and the target qemu is not running" >&2
+if operator_tmux has-session -t "$target_session" 2>/dev/null; then
+  echo "tmux session ${target_session} already exists and the target qemu is not running" >&2
   exit 1
 fi
 
@@ -165,17 +167,17 @@ else
   session_cmd="exec $(printf '%q' "$runner")"
 fi
 
-echo "target session: zns-target"
+echo "target session: ${target_session}"
 echo "target console: $console"
 echo "target metrics: 127.0.0.1:${mint_fwd}/metrics and 127.0.0.1:${zebra_fwd}/metrics"
-operator_tmux new-session -d -s zns-target "$session_cmd" \; \
-  pipe-pane -t zns-target -o "cat >> $(printf '%q' "$console")"
+operator_tmux new-session -d -s "$target_session" "$session_cmd" \; \
+  pipe-pane -t "$target_session" -o "cat >> $(printf '%q' "$console")"
 sleep 2
 pid="$(qemu_pid)"
 if [[ -z "$pid" ]] || ! kill -0 "$pid" 2>/dev/null; then
   echo "target qemu exited" >&2
   tail -n 40 "$console" >&2 || true
-  operator_tmux kill-session -t zns-target 2>/dev/null || true
+  operator_tmux kill-session -t "$target_session" 2>/dev/null || true
   exit 1
 fi
 printf '%s\n' "$pid" >"$pidfile"

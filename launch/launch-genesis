@@ -4,13 +4,13 @@
 #   sudo ZNS_NETWORK=testnet ZNS_STATE_IMG=/path/zns.img \
 #     ZEBRA_STATE_IMG=/path/zebra.img ./launch/launch-genesis v0.1.x
 #
-# ZNS_NETWORK is needed only until $ZNS_HOPS/network records it. Unless
+# ZNS_NETWORK selects this guest's directory under $ZNS_HOPS. Unless
 # INITRD names a local build, fetch-release downloads and verifies that
-# network's initrd for the tag. Creates $ZNS_HOPS/upgrade-from-<tag> and
-# transport-from-<tag>, records the tag in $ZNS_HOPS/current, and starts
-# QEMU in the operator's tmux session zns-source, as launch-target does for
-# zns-target. The console is also appended to $ZNS_HOPS/logs/<tag>.console.
-# Attach with: tmux attach -t zns-source
+# network's initrd for the tag. Creates $ZNS_HOPS/<network>/upgrade-from-<tag>
+# and transport-from-<tag>, records the tag in that directory's current, and
+# starts QEMU in the operator's tmux session zns-<network>-source. The
+# console is also appended to logs/<tag>.console in that directory.
+# Attach with: tmux attach -t zns-<network>-source
 # The state images must already exist. This command does not create or
 # truncate them.
 set -euo pipefail
@@ -50,8 +50,8 @@ fi
 zns_img="$(realpath "$ZNS_STATE_IMG")"
 zebra_img="$(realpath "$ZEBRA_STATE_IMG")"
 
-hops="$(hops_root)"
-network="$(hops_network "$hops")"
+hops="$(hops_root)" || exit 1
+network="$(hops_network "$hops")" || exit 1
 if [[ -f "$hops/current" ]]; then
   existing="$(read_current "$hops")"
   if [[ "$existing" != "$version" ]]; then
@@ -87,13 +87,16 @@ if [[ ! -f "$hops/current" ]]; then
   write_current "$hops" "$version"
 fi
 
-name="zns-${version}"
+name="$(guest_qemu_name "$version")" || exit 1
+session="$(guest_session source)" || exit 1
+ports="$(network_ports genesis)" || exit 1
+read -r mint_fwd zebra_fwd <<<"$ports"
 if pgrep -af qemu-system-x86_64 | grep -F -- "-name ${name} -nographic" >/dev/null; then
   echo "$name is already running" >&2
   exit 1
 fi
-if operator_tmux has-session -t zns-source 2>/dev/null; then
-  echo "tmux session zns-source already exists and $name is not running" >&2
+if operator_tmux has-session -t "$session" 2>/dev/null; then
+  echo "tmux session ${session} already exists and $name is not running" >&2
   echo "close that session, then run launch-genesis again" >&2
   exit 1
 fi
@@ -102,7 +105,7 @@ fi
 # passwordless sudo it would die before its output could be logged.
 if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
   if ! sudo -u "$SUDO_USER" -- sudo -n true 2>/dev/null; then
-    echo "$SUDO_USER needs passwordless sudo: the zns-source session starts QEMU with sudo -n" >&2
+    echo "$SUDO_USER needs passwordless sudo: the ${session} session starts QEMU with sudo -n" >&2
     exit 1
   fi
 fi
@@ -114,11 +117,13 @@ runner="$hops/logs/${version}.launch"
   printf 'export ZEBRA_STATE_IMG=%q\n' "$zebra_img"
   printf 'export INITRD=%q\n' "$INITRD"
   printf 'export ZNS_QEMU_NAME=%q\n' "$name"
+  printf 'export ZNS_MINT_FWD=%q\n' "$mint_fwd"
+  printf 'export ZNS_ZEBRA_FWD=%q\n' "$zebra_fwd"
   printf 'export ZNS_9P=%q\n' "upgrade|${hops}/upgrade-from-${version}|ro;transport|${hops}/transport-from-${version}|rw"
   # sudo -n starts the session with a clean environment. These are the
   # launch settings an operator may set; launch-guest.sh checks the measured
   # ones (KERNEL, OVMF) against versions.toml.
-  for var in KERNEL OVMF MEM ZNS_MINT_FWD ZNS_ZEBRA_FWD; do
+  for var in KERNEL OVMF MEM; do
     if [[ -n "${!var:-}" ]]; then
       printf 'export %s=%q\n' "$var" "${!var}"
     fi
@@ -147,9 +152,9 @@ echo "transport: $hops/transport-from-${version}"
 echo "zns state: $zns_img"
 echo "zebra state: $zebra_img"
 
-if ! operator_tmux new-session -d -s zns-source "$session_cmd" \; \
-  pipe-pane -t zns-source "cat >> $(printf '%q' "$console")"; then
-  echo "could not start tmux session zns-source" >&2
+if ! operator_tmux new-session -d -s "$session" "$session_cmd" \; \
+  pipe-pane -t "$session" "cat >> $(printf '%q' "$console")"; then
+  echo "could not start tmux session ${session}" >&2
   tail -n 40 "$console" >&2 || true
   exit 1
 fi
@@ -157,8 +162,9 @@ sleep 2
 if ! pgrep -af qemu-system-x86_64 | grep -F -- "-name ${name} -nographic" >/dev/null; then
   echo "$name exited" >&2
   tail -n 40 "$console" >&2 || true
-  operator_tmux kill-session -t zns-source 2>/dev/null || true
+  operator_tmux kill-session -t "$session" 2>/dev/null || true
   exit 1
 fi
-echo "$name is running in tmux session zns-source"
-echo "attach with: tmux attach -t zns-source"
+echo "$name is running in tmux session ${session}"
+echo "metrics: 127.0.0.1:${mint_fwd}/metrics and 127.0.0.1:${zebra_fwd}/metrics"
+echo "attach with: tmux attach -t ${session}"

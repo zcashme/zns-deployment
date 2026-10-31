@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Put a Zebra snapshot this guest can open on a new target disk.
 #
-#   sudo ./launch/install-zebra-snapshot v0.1.x
+#   sudo ZNS_NETWORK=testnet ./launch/install-zebra-snapshot v0.1.x
 #
-# Creates $ZNS_HOPS/images/<tag>/zebra-state.img only when that file is
+# Creates $ZNS_HOPS/<network>/images/<tag>/zebra-state.img only when that file is
 # absent, and extracts the snapshot into it. An existing image is left
 # unchanged. The ZNS disk is not touched.
 set -euo pipefail
@@ -31,8 +31,8 @@ for cmd in truncate mkfs.ext4 zstd tar; do
   fi
 done
 
-hops="$(hops_root)"
-network="$(hops_network "$hops")"
+hops="$(hops_root)" || exit 1
+network="$(hops_network "$hops")" || exit 1
 img="$hops/images/${tag}/zebra-state.img"
 if [[ -L "$img" ]]; then
   echo "$img is a symlink; refusing to use it" >&2
