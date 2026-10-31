@@ -433,7 +433,7 @@ watch_target() {
   if [ "$target_wait" -eq 1 ]; then
     if channel_has /migration offer.bin attestation.bin encrypted_seed.bin \
       source_attestation.bin receipt.bin receipt_attestation.bin \
-      zns_mint.conf zns_custody_manifest.toml ceremony_state.toml source.ready; then
+      zns_mint.conf zns_custody_manifest.toml ceremony_state.toml; then
       return
     fi
     target_wait=0
@@ -444,19 +444,11 @@ watch_target() {
   artifact="$(artifact_line /run/zns-upgrade)"
   [ -n "$artifact" ] || return
   # zns-migrate target waits for source.ready and reads that file when it is
-  # already present. For a same-release backup, that latch alone is this
-  # attempt. Any other channel file is a previous attempt.
-  if same_release /run/zns-upgrade/upgrade.toml; then
-    if channel_has /migration offer.bin attestation.bin encrypted_seed.bin \
-      source_attestation.bin receipt.bin receipt_attestation.bin \
-      zns_mint.conf zns_custody_manifest.toml ceremony_state.toml; then
-      log "migration transport is not empty; target is waiting for it to be cleared"
-      target_wait=1
-      return
-    fi
-  elif channel_has /migration offer.bin attestation.bin encrypted_seed.bin \
+  # already present. That file alone is this attempt. Any other channel file
+  # is a previous attempt.
+  if channel_has /migration offer.bin attestation.bin encrypted_seed.bin \
     source_attestation.bin receipt.bin receipt_attestation.bin \
-    zns_mint.conf zns_custody_manifest.toml ceremony_state.toml source.ready; then
+    zns_mint.conf zns_custody_manifest.toml ceremony_state.toml; then
     log "migration transport is not empty; target is waiting for it to be cleared"
     target_wait=1
     return
