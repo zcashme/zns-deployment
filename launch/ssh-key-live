@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# Live machine: install a standby public key for the account stand logs in as.
+#
+#   sudo ./launch/ssh-key-live 'ssh-ed25519 AAAA... zns-backup@standby-hostname'
+#
+# The account is the one that invoked sudo. The same line is not added twice.
+# The live transport directory is made writable by that account.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=hops.sh
+source "$HERE/hops.sh"
+
+if [[ "$#" -ne 1 || -z "$1" ]]; then
+  echo "usage: ssh-key-live <ssh-ed25519-public-key>" >&2
+  exit 1
+fi
+line="$1"
+if [[ "$line" == *$'\n'* || "$line" == *$'\r'* ]]; then
+  echo "public key must be one ssh-ed25519 line" >&2
+  exit 1
+fi
+read -r keytype blob _ <<<"$line"
+if [[ "$keytype" != "ssh-ed25519" || ! "$blob" =~ ^[A-Za-z0-9+/]+={0,2}$ ]]; then
+  echo "public key must be one ssh-ed25519 line" >&2
+  exit 1
+fi
+
+if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+  user="$SUDO_USER"
+elif [[ "$(id -u)" -eq 0 ]]; then
+  echo "run as the account the standby will log in as, or with sudo from that account" >&2
+  exit 1
+else
+  user="$(id -un)"
+fi
+home="$(getent passwd "$user" | cut -d: -f6)"
+if [[ -z "$home" || ! -d "$home" ]]; then
+  echo "no home directory for $user" >&2
+  exit 1
+fi
+
+run_as_user() {
+  if [[ "$(id -un)" == "$user" ]]; then
+    "$@"
+  else
+    sudo -u "$user" -- "$@"
+  fi
+}
+
+auth="$home/.ssh/authorized_keys"
+run_as_user mkdir -p "$home/.ssh"
+run_as_user chmod 700 "$home/.ssh"
+run_as_user touch "$auth"
+run_as_user chmod 600 "$auth"
+
+hops="$(hops_root)"
+if [[ -f "$hops/current" ]]; then
+  tag="$(read_current "$hops")"
+  open_transport_dir "$hops/transport-from-${tag}" "$user"
+  echo "transport directory is writable by $user: $hops/transport-from-${tag}"
+fi
+
+if run_as_user grep -qF -- "$blob" "$auth"; then
+  echo "live $(hostname) already authorizes this key for $user"
+  exit 0
+fi
+if [[ -s "$auth" ]]; then
+  last="$(tail -c 1 "$auth" || true)"
+  if [[ -n "$last" ]]; then
+    printf '\n' | run_as_user tee -a "$auth" >/dev/null
+  fi
+fi
+printf '%s\n' "$line" | run_as_user tee -a "$auth" >/dev/null
+echo "live $(hostname) authorizes this key for $user"

@@ -1,0 +1,439 @@
+#!/usr/bin/env bash
+# Seal this release's capsule onto another machine. The guest stops once the
+# capsule is sealed.
+#
+# The release workflow, run on this tag with from_measurement set to this
+# release's own measurement, publishes zns-<network>-backup.bin. The other
+# values are the live guest's, the same ones an upgrade document takes.
+# That run leaves the upgrade document already on the release in place.
+#
+# The two machines share the live guest's upgrade and transport directories.
+# Only those two hosts can write the transport directory. The standby guest
+# is the same release, so both measurements in the document are this one.
+#
+# On the standby machine, pass the live server's address. The command mounts
+# that server's upgrade and transport directories over SSH, then boots:
+#
+#   sudo ./launch/backup stand v0.1.x <live-host>
+#
+# Then on the live host:
+#
+#   sudo ./launch/backup publish
+#
+# stand boots the guest in tmux session zns-backup and does not change
+# current. After the capsule is sealed the guest stops. That disk is the
+# backup. A later boot of this release opens the capsule. publish does not
+# change current. The live mint stops for the handoff and starts again
+# after the receipt.
+#
+# The live guest has to be a release that clears the hold after a
+# same-release receipt. Its upgrade and transport directories are the empty
+# ones from its own boot. A guest still mounted on the directory of the move
+# that created it is started again on this tag first.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=hops.sh
+source "$HERE/hops.sh"
+
+ZNS_IMG_SIZE="${ZNS_IMG_SIZE:-4G}"
+
+usage() {
+  echo "usage: launch/backup publish" >&2
+  echo "       launch/backup stand <v*-tag> <live-host>" >&2
+  exit 1
+}
+
+measurements_match() {
+  local toml="$1" from to
+  from="$(sed -n 's/^from_measurement = "\([0-9a-fA-F]*\)"$/\1/p' "$toml" | head -n 1)"
+  to="$(sed -n 's/^to_measurement = "\([0-9a-fA-F]*\)"$/\1/p' "$toml" | head -n 1)"
+  [[ -n "$from" && "${from,,}" == "${to,,}" ]]
+}
+
+transport_clear() {
+  local dir="$1" name
+  for name in source.ready offer.bin attestation.bin encrypted_seed.bin \
+    source_attestation.bin receipt.bin receipt_attestation.bin \
+    zns_mint.conf zns_custody_manifest.toml ceremony_state.toml; do
+    if [[ -e "$dir/$name" ]]; then
+      echo "$dir still has $name" >&2
+      return 1
+    fi
+  done
+}
+
+# Mount one live-server directory over SSH. The operator's SSH keys are used.
+# allow_other lets root QEMU use the mount. default_permissions keeps the
+# remote directory mode in force for every other account.
+mount_live_dir() {
+  local remote="$1" local_dir="$2" source
+  if findmnt -n "$local_dir" >/dev/null 2>&1; then
+    source="$(findmnt -n -o SOURCE "$local_dir")"
+    if [[ "$source" == "$remote" ]]; then
+      echo "keeping $local_dir mounted from $remote"
+      return
+    fi
+    echo "$local_dir is already mounted from $source" >&2
+    exit 1
+  fi
+  mkdir -p "$local_dir"
+  if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+    chown "$SUDO_USER" "$local_dir"
+  fi
+  if [[ -n "$(find "$local_dir" -mindepth 1 -print -quit)" ]]; then
+    echo "$local_dir is not an empty mount point" >&2
+    exit 1
+  fi
+  if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+    sudo -u "$SUDO_USER" -- sshfs \
+      -o cache=no,attr_timeout=0,entry_timeout=0,allow_other,default_permissions,ServerAliveInterval=15 \
+      "$remote" "$local_dir"
+  else
+    sshfs \
+      -o cache=no,attr_timeout=0,entry_timeout=0,allow_other,default_permissions,ServerAliveInterval=15 \
+      "$remote" "$local_dir"
+  fi
+  echo "mounted $remote on $local_dir"
+}
+
+# live-host, or user@live-host. The remote directories are that user's
+# zns-hops/upgrade-from-<tag> and transport-from-<tag>.
+mount_live_hops() {
+  local tag="$1" spec="$2" live_user live_host remote_hops probe mount_root
+  if [[ "$spec" == *@* ]]; then
+    live_user="${spec%%@*}"
+    live_host="${spec#*@}"
+  else
+    live_user="${SUDO_USER:-ubuntu}"
+    if [[ "$live_user" == "root" ]]; then
+      live_user="ubuntu"
+    fi
+    live_host="$spec"
+  fi
+  if [[ ! "$live_user" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]]; then
+    echo "SSH user must be a single account name, got ${live_user}" >&2
+    exit 1
+  fi
+  if [[ ! "$live_host" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]]; then
+    echo "live host must be a hostname or address, got ${live_host}" >&2
+    exit 1
+  fi
+  if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+    if ! grep -qE '^[[:space:]]*user_allow_other' /etc/fuse.conf 2>/dev/null; then
+      echo "/etc/fuse.conf needs a user_allow_other line so the guest can use the SSH mounts" >&2
+      exit 1
+    fi
+  fi
+  remote_hops="${ZNS_LIVE_HOPS:-/home/${live_user}/zns-hops}"
+  # The live channel is mounted under this directory. Mode 700, owned by the
+  # operator, so other accounts on this host cannot reach it. Root QEMU can.
+  mount_root="$(hops_root)/backup-mount"
+  mkdir -p "$mount_root/${tag}"
+  if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+    chown "$SUDO_USER:$(id -gn "$SUDO_USER")" "$mount_root" "$mount_root/${tag}"
+  fi
+  chmod 700 "$mount_root" "$mount_root/${tag}"
+  upgrade="$mount_root/${tag}/upgrade"
+  transport="$mount_root/${tag}/transport"
+  mount_live_dir "${live_user}@${live_host}:${remote_hops}/upgrade-from-${tag}" "$upgrade"
+  mount_live_dir "${live_user}@${live_host}:${remote_hops}/transport-from-${tag}" "$transport"
+  probe="$transport/.zns-write-probe"
+  if ! touch "$probe" 2>/dev/null; then
+    echo "the standby account cannot create files in the live transport directory" >&2
+    echo "on the live host, run ./launch/ssh-key-live again" >&2
+    exit 1
+  fi
+  rm -f "$probe"
+}
+
+refuse_odd_path() {
+  local path="$1"
+  if [[ -L "$path" ]]; then
+    echo "$path is a symlink; refusing to use it" >&2
+    exit 1
+  fi
+  if [[ "$path" == *'|'* || "$path" == *';'* || "$path" == *' '* ]]; then
+    echo "$path cannot contain a space, '|', or ';'" >&2
+    exit 1
+  fi
+}
+
+create_image() {
+  local path="$1" size="$2"
+  if [[ -L "$path" ]]; then
+    echo "$path is a symlink; refusing to use it" >&2
+    exit 1
+  fi
+  if [[ -e "$path" ]]; then
+    echo "keeping $path"
+    return
+  fi
+  echo "creating $path ($size)"
+  truncate -s "$size" "$path"
+  mkfs.ext4 -q -F "$path"
+}
+
+publish() {
+  local hops tag release_dir upgrade transport measurement
+  if [[ "$#" -ne 0 ]]; then
+    usage
+  fi
+  require_root
+  refuse_state_disk_overrides
+  hops="$(hops_root)"
+  tag="$(read_current "$hops")"
+  "$HERE/fetch-release" "$tag"
+  release_dir="$hops/images/${tag}/release"
+  if [[ ! -s "$release_dir/backup.bin" || ! -s "$release_dir/backup.toml" || ! -s "$release_dir/backup.bundle.jsonl" ]]; then
+    measurement="$(tr -d '[:space:]' <"$release_dir/snp-measurement.txt" 2>/dev/null || true)"
+    echo "release $tag has no backup document for $(hops_network "$hops")" >&2
+    echo "run the release workflow on $tag with from_measurement set to this release's measurement" >&2
+    if [[ -n "$measurement" ]]; then
+      echo "measurement: $measurement" >&2
+    fi
+    exit 1
+  fi
+  if ! measurements_match "$release_dir/backup.toml"; then
+    echo "$release_dir/backup.toml is not a same-release document" >&2
+    exit 1
+  fi
+  upgrade="$hops/upgrade-from-${tag}"
+  transport="$hops/transport-from-${tag}"
+  if [[ ! -d "$upgrade" || ! -d "$transport" ]]; then
+    echo "missing $upgrade or $transport; the live guest mounts these" >&2
+    exit 1
+  fi
+  open_transport_dir "$transport" "${SUDO_USER:-}"
+  if pgrep -af qemu-system-x86_64 | grep -F -- "-name zns-${tag} -nographic" >/dev/null; then
+    if ! pgrep -af qemu-system-x86_64 | grep -F -- "-name zns-${tag} -nographic" | grep -qF -- "path=${upgrade}," \
+      || ! pgrep -af qemu-system-x86_64 | grep -F -- "-name zns-${tag} -nographic" | grep -qF -- "path=${transport},"; then
+      echo "the running $tag guest is not mounted on $upgrade and $transport" >&2
+      echo "start that guest on $tag before publishing" >&2
+      exit 1
+    fi
+  fi
+  if ! transport_clear "$transport"; then
+    echo "once that handshake has finished, remove the files in $transport and publish again" >&2
+    exit 1
+  fi
+  if [[ -f "$upgrade/upgrade.bin" && -f "$upgrade/upgrade.toml" && -f "$upgrade/upgrade.bundle.jsonl" ]] \
+    && cmp -s "$release_dir/backup.bin" "$upgrade/upgrade.bin" \
+    && cmp -s "$release_dir/backup.toml" "$upgrade/upgrade.toml" \
+    && cmp -s "$release_dir/backup.bundle.jsonl" "$upgrade/upgrade.bundle.jsonl"; then
+    echo "backup document already in $upgrade"
+  else
+    rm -f "$upgrade/upgrade.bin"
+    cp "$release_dir/backup.toml" "$upgrade/upgrade.toml"
+    cp "$release_dir/backup.bundle.jsonl" "$upgrade/upgrade.bundle.jsonl"
+    cp "$release_dir/backup.bin" "$upgrade/upgrade.bin.partial"
+    mv "$upgrade/upgrade.bin.partial" "$upgrade/upgrade.bin"
+    echo "dropped backup document into $upgrade"
+  fi
+  echo "upgrade: $upgrade"
+  echo "transport: $transport"
+  echo "the standby guest should already be running against these two directories"
+}
+
+stand() {
+  local tag upgrade transport hops initrd zns_img zebra_img name console runner running mnt
+  local next_upgrade next_transport mint_fwd zebra_fwd session_cmd standard
+  if [[ "$#" -ne 2 ]]; then
+    usage
+  fi
+  tag="$1"
+  require_tag "$tag"
+  refuse_state_disk_overrides
+  require_root
+  for cmd in truncate mkfs.ext4 tmux sshfs findmnt; do
+    if ! command -v "$cmd" >/dev/null; then
+      echo "missing $cmd" >&2
+      exit 1
+    fi
+  done
+  hops="$(hops_root)"
+  mount_live_hops "$tag" "$2"
+  refuse_odd_path "$upgrade"
+  refuse_odd_path "$transport"
+  if [[ -f "$upgrade/upgrade.toml" || -f "$upgrade/upgrade.bin" || -f "$upgrade/upgrade.bundle.jsonl" ]]; then
+    echo "$upgrade already has an upgrade document" >&2
+    echo "remove upgrade.toml, upgrade.bin, and upgrade.bundle.jsonl, start stand, then publish" >&2
+    exit 1
+  fi
+  "$HERE/fetch-release" "$tag"
+  initrd="$hops/images/${tag}/release/zns-initrd.img"
+  if [[ ! -s "$initrd" || -L "$initrd" ]]; then
+    echo "missing $initrd" >&2
+    exit 1
+  fi
+
+  mkdir -p "$hops/images/${tag}" "$hops/logs" \
+    "$hops/backup-next/${tag}/upgrade" "$hops/backup-next/${tag}/transport"
+  next_upgrade="$hops/backup-next/${tag}/upgrade"
+  next_transport="$hops/backup-next/${tag}/transport"
+  for dir in "$next_upgrade" "$next_transport"; do
+    if [[ -L "$dir" ]]; then
+      echo "$dir is a symlink" >&2
+      exit 1
+    fi
+    if [[ -n "$(find "$dir" -mindepth 1 -print -quit)" ]]; then
+      echo "$dir is not empty" >&2
+      echo "remove the files there and run stand again" >&2
+      exit 1
+    fi
+  done
+  zns_img="$hops/images/${tag}/backup-zns-state.img"
+  zebra_img="$hops/images/${tag}/backup-zebra-state.img"
+  name="zns-backup"
+  console="$hops/logs/backup-${tag}.console"
+  mint_fwd="${ZNS_MINT_FWD:-29465}"
+  zebra_fwd="${ZNS_ZEBRA_FWD:-29999}"
+
+  running="$(pgrep -af qemu-system-x86_64 | grep -F -- "-name ${name} -nographic" || true)"
+  if [[ -n "$running" ]]; then
+    if grep -qF -- "file=${zns_img}," <<<"$running"; then
+      echo "$name is already running for $tag"
+      echo "console: $console"
+      exit 0
+    fi
+    echo "$name is already running for another release" >&2
+    echo "stop that guest before standing up $tag" >&2
+    exit 1
+  fi
+  if operator_tmux has-session -t zns-backup 2>/dev/null; then
+    echo "tmux session zns-backup already exists and $name is not running" >&2
+    exit 1
+  fi
+  for img in "$zns_img" "$zebra_img"; do
+    if pgrep -af qemu-system-x86_64 | grep -qF -- "file=${img},"; then
+      echo "$img is in use by a running guest" >&2
+      exit 1
+    fi
+  done
+
+  if [[ -L "$zns_img" || ( -e "$zns_img" && ! -f "$zns_img" ) ]]; then
+    echo "$zns_img must be a regular file" >&2
+    exit 1
+  fi
+  if [[ -e "$zns_img" && -e "$hops/images/${tag}/zns-state.img" && "$zns_img" -ef "$hops/images/${tag}/zns-state.img" ]]; then
+    echo "$zns_img is the live ZNS disk" >&2
+    exit 1
+  fi
+  if [[ -e "$zns_img" ]]; then
+    mnt="$(mktemp -d)"
+    if ! mount -o loop "$zns_img" "$mnt"; then
+      rmdir "$mnt"
+      echo "could not read $zns_img" >&2
+      exit 1
+    fi
+    if [[ -f "$mnt/keys/zns_seed.capsule" || -f "$mnt/keys/zns_custody_manifest.toml" ]]; then
+      umount "$mnt"
+      rmdir "$mnt"
+      echo "$zns_img already has a capsule or a custody manifest" >&2
+      echo "this guest stays off" >&2
+      echo "start it with launch-genesis once the live guest is stopped and that session is closed" >&2
+      exit 1
+    fi
+    umount "$mnt"
+    rmdir "$mnt"
+    while read -r dev _; do
+      [[ -n "$dev" ]] || continue
+      losetup -d "$dev" 2>/dev/null || true
+    done < <(losetup -j "$zns_img" 2>/dev/null || true)
+  fi
+
+  create_image "$zns_img" "$ZNS_IMG_SIZE"
+  if [[ -L "$zebra_img" ]]; then
+    echo "$zebra_img is a symlink; refusing to use it" >&2
+    exit 1
+  fi
+  if [[ -e "$zebra_img" && -e "$hops/images/${tag}/zebra-state.img" && "$zebra_img" -ef "$hops/images/${tag}/zebra-state.img" ]]; then
+    echo "$zebra_img is the live Zebra disk" >&2
+    exit 1
+  fi
+  if [[ ! -e "$zebra_img" ]]; then
+    standard="$hops/images/${tag}/zebra-state.img"
+    if [[ -e "$standard" ]]; then
+      echo "$standard already exists and is not the standby disk" >&2
+      echo "the standby zebra disk is $zebra_img" >&2
+      exit 1
+    fi
+    "$HERE/install-zebra-snapshot" "$tag"
+    if [[ ! -s "$standard" || -L "$standard" ]]; then
+      echo "missing $standard" >&2
+      exit 1
+    fi
+    mv "$standard" "$zebra_img"
+  else
+    echo "keeping $zebra_img"
+  fi
+
+  if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+    if ! sudo -u "$SUDO_USER" -- sudo -n true 2>/dev/null; then
+      echo "$SUDO_USER needs passwordless sudo: the zns-backup session starts QEMU with sudo -n" >&2
+      exit 1
+    fi
+  fi
+
+  runner="$hops/logs/backup-${tag}.launch"
+  {
+    printf '%s\n' '#!/bin/bash'
+    printf 'export ZNS_STATE_IMG=%q\n' "$zns_img"
+    printf 'export ZEBRA_STATE_IMG=%q\n' "$zebra_img"
+    printf 'export INITRD=%q\n' "$initrd"
+    printf 'export ZNS_QEMU_NAME=%q\n' "$name"
+    printf 'export ZNS_MINT_FWD=%q\n' "$mint_fwd"
+    printf 'export ZNS_ZEBRA_FWD=%q\n' "$zebra_fwd"
+    printf 'export ZNS_9P=%q\n' "upgrade|${upgrade}|ro;transport|${transport}|rw;upgrade-next|${next_upgrade}|ro;transport-next|${next_transport}|rw"
+    for var in KERNEL OVMF MEM; do
+      if [[ -n "${!var:-}" ]]; then
+        printf 'export %s=%q\n' "$var" "${!var}"
+      fi
+    done
+    printf 'exec %q\n' "$HERE/launch-guest.sh"
+  } >"$runner"
+  chmod 755 "$runner"
+
+  touch "$console"
+  if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+    chown "$SUDO_USER" "$console" || true
+    session_cmd="exec sudo -n $(printf '%q' "$runner")"
+  else
+    session_cmd="exec $(printf '%q' "$runner")"
+  fi
+
+  echo "standby session: zns-backup"
+  echo "console: $console"
+  echo "initrd: $initrd"
+  echo "zns state: $zns_img"
+  echo "zebra state: $zebra_img"
+  echo "metrics: 127.0.0.1:${mint_fwd}/metrics and 127.0.0.1:${zebra_fwd}/metrics"
+  if ! operator_tmux new-session -d -s zns-backup "$session_cmd" \; \
+    pipe-pane -t zns-backup "cat >> $(printf '%q' "$console")"; then
+    echo "could not start tmux session zns-backup" >&2
+    tail -n 40 "$console" >&2 || true
+    exit 1
+  fi
+  sleep 2
+  if ! pgrep -af qemu-system-x86_64 | grep -F -- "-name ${name} -nographic" >/dev/null; then
+    echo "$name exited" >&2
+    tail -n 40 "$console" >&2 || true
+    operator_tmux kill-session -t zns-backup 2>/dev/null || true
+    exit 1
+  fi
+  echo "$name is running in tmux session zns-backup"
+  echo "attach with: tmux attach -t zns-backup"
+  echo "on the live host, with this guest already up: sudo ./launch/backup publish"
+  echo "after the capsule is sealed this guest stops"
+}
+
+if [[ "$#" -lt 1 ]]; then
+  usage
+fi
+cmd="$1"
+shift
+case "$cmd" in
+  publish) publish "$@" ;;
+  stand) stand "$@" ;;
+  *) usage ;;
+esac

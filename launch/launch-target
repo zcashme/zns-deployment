@@ -64,7 +64,8 @@ if [[ ! -s "$hops/images/${to}/release/upgrade.bin" ]]; then
   exit 1
 fi
 
-mkdir -p "$hops/upgrade-from-${to}" "$hops/transport-from-${to}" "$hops/logs"
+mkdir -p "$hops/upgrade-from-${to}" "$hops/logs"
+open_transport_dir "$hops/transport-from-${to}" "${SUDO_USER:-}"
 mkdir -p "$hops/images/${to}"
 
 zns_img="$hops/images/${to}/zns-state.img"

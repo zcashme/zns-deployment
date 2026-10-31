@@ -37,6 +37,18 @@ fatal() {
   exit 1
 }
 
+# QEMU is started with -no-reboot, so reboot exits QEMU. This BusyBox has
+# reboot and not poweroff.
+stop_guest() {
+  sync || true
+  log "stopping"
+  if [ -w /proc/sysrq-trigger ]; then
+    echo 1 > /proc/sys/kernel/sysrq 2>/dev/null || true
+    echo o > /proc/sysrq-trigger 2>/dev/null || true
+  fi
+  reboot -f 2>/dev/null || true
+}
+
 export HOME=/root
 export ZCASH_PARAMS_DIR="$PARAMS_DIR"
 export PATH=/usr/local/bin:/sbin:/usr/sbin:/bin:/usr/bin
@@ -165,6 +177,11 @@ alive() {
 }
 
 start_supervisor() {
+  # /run/backup-stopping is set once a same-release backup has the capsule.
+  # The supervisor stays down until this guest powers off.
+  if [ -f /run/backup-stopping ]; then
+    return
+  fi
   if alive "$SUP_PID"; then
     return
   fi
@@ -174,6 +191,11 @@ start_supervisor() {
   log "starting supervisor"
   /usr/local/bin/zns-supervise >>"$STATE_DIR/log/supervisor.log" 2>&1 &
   SUP_PID=$!
+  printf '%s\n' "$SUP_PID" >/run/supervisor.pid || true
+  if [ -f /run/backup-stopping ]; then
+    kill -9 "$SUP_PID" 2>/dev/null || true
+    SUP_PID=""
+  fi
 }
 
 watch_supervisor() {
@@ -276,6 +298,114 @@ artifact_line() {
   grep '^artifact_hash ' "$1/upgrade.toml" 2>/dev/null || true
 }
 
+# The source done line is the sequence, both measurements, and the artifact
+# hash. A same-release backup is another line for the same initrd.
+document_line() {
+  dir="$1"
+  seq=$(grep '^sequence = ' "$dir/upgrade.toml" 2>/dev/null || true)
+  from=$(grep '^from_measurement = ' "$dir/upgrade.toml" 2>/dev/null || true)
+  to=$(grep '^to_measurement = ' "$dir/upgrade.toml" 2>/dev/null || true)
+  art=$(grep '^artifact_hash = ' "$dir/upgrade.toml" 2>/dev/null || true)
+  if [ -z "$seq" ] || [ -z "$from" ] || [ -z "$to" ] || [ -z "$art" ]; then
+    return 0
+  fi
+  printf '%s|%s|%s|%s\n' "$seq" "$from" "$to" "$art"
+}
+
+# zns-migrate and the same-release decision both read this copy.
+# The 9p directory stays writable by the host.
+stage_document() {
+  src="$1"
+  rm -rf /run/zns-upgrade
+  mkdir -p /run/zns-upgrade || return 1
+  cp "$src/upgrade.toml" /run/zns-upgrade/upgrade.toml || return 1
+  cp "$src/upgrade.bundle.jsonl" /run/zns-upgrade/upgrade.bundle.jsonl || return 1
+  cp "$src/upgrade.bin" /run/zns-upgrade/upgrade.bin || return 1
+}
+
+same_release() {
+  toml="$1"
+  from_line=$(grep '^from_measurement = "' "$toml" 2>/dev/null || true)
+  to_line=$(grep '^to_measurement = "' "$toml" 2>/dev/null || true)
+  from=${from_line#*\"}
+  from=${from%\"}
+  to=${to_line#*\"}
+  to=${to%\"}
+  [ -n "$from" ] && [ "$from" = "$to" ]
+}
+
+# A finished same-release backup leaves the hold file absent. The done file
+# can already be in place while the hold file is still there. The two
+# measurements stored in that done line decide. The upgrade directory is
+# not read again.
+clear_recorded_backup_hold() {
+  line=""
+  [ -f "$STATE_DIR/migrate-source.done" ] || return 0
+  IFS= read -r line <"$STATE_DIR/migrate-source.done" || return 0
+  oldifs=$IFS
+  IFS='|'
+  set -f
+  set -- $line
+  set +f
+  IFS=$oldifs
+  from=""
+  to=""
+  part=""
+  for part in "$@"; do
+    case "$part" in
+      'from_measurement = "'*)
+        from=${part#*\"}
+        from=${from%\"}
+        ;;
+      'to_measurement = "'*)
+        to=${part#*\"}
+        to=${to%\"}
+        ;;
+    esac
+  done
+  [ -n "$from" ] && [ "$from" = "$to" ] || return 0
+  [ -f "$STATE_DIR/migrate-source.hold" ] || return 0
+  rm -f "$STATE_DIR/migrate-source.hold" || return 1
+  log "same-release backup accepted; mint hold cleared"
+}
+
+# The supervisor is stopped before the hold file is removed. The disk that
+# remains has no hold file. A later boot of this release opens the capsule.
+# /run/backup-stopping is set first, and the supervisor treats that file as
+# a hold, so mint stays down across the removal.
+stop_pids() {
+  pids="$(pidof "$1" 2>/dev/null || true)"
+  if [ -n "$pids" ]; then
+    kill -9 $pids 2>/dev/null || true
+  fi
+}
+
+finish_backup() {
+  printf 'stopping\n' >/run/backup-stopping || return 1
+  stop_pids zns-supervise
+  stop_pids zns-supervise
+  stop_pids zns-mint
+  rm -f "$STATE_DIR/migrate-source.hold" || return 1
+  sync || true
+  stop_pids zns-supervise
+  stop_pids zns-mint
+  stop_guest
+}
+
+# Power off only after the hold file is gone. Stopping earlier leaves the
+# hold on the disk, and the next boot of this release would stay dark.
+await_backup_poweroff() {
+  ticks=0
+  while [ ! -f /run/backup-stopping ] || [ -f "$STATE_DIR/migrate-source.hold" ]; do
+    ticks=$((ticks + 1))
+    if [ $((ticks % 30)) -eq 0 ]; then
+      log "backup capsule is sealed; waiting to power off"
+    fi
+    sleep 1 || true
+  done
+  stop_guest
+}
+
 ceremony_complete() {
   # The custody manifest is the completion record: keygen writes it at
   # finalize, and a migration target installs it beside the capsule.
@@ -299,8 +429,6 @@ already_done() {
   [ "$done_line" = "$line" ]
 }
 
-# Identity of an upgrade is artifact_hash. sequence is not compared, so a
-# rollback document is a different hash and is allowed to run.
 watch_target() {
   if [ "$target_wait" -eq 1 ]; then
     if channel_has /migration offer.bin attestation.bin encrypted_seed.bin \
@@ -312,8 +440,12 @@ watch_target() {
     log "migration transport is empty; target can try again"
   fi
   upgrade_ready /upgrade || return
-  artifact="$(artifact_line /upgrade)"
+  stage_document /upgrade || return
+  artifact="$(artifact_line /run/zns-upgrade)"
   [ -n "$artifact" ] || return
+  # zns-migrate target waits for source.ready and reads that file when it is
+  # already present. That file alone is this attempt. Any other channel file
+  # is a previous attempt.
   if channel_has /migration offer.bin attestation.bin encrypted_seed.bin \
     source_attestation.bin receipt.bin receipt_attestation.bin \
     zns_mint.conf zns_custody_manifest.toml ceremony_state.toml; then
@@ -322,11 +454,19 @@ watch_target() {
     return
   fi
   mkdir -p "$STATE_DIR/keys" || return
+  # The hold is in place before the capsule is installed. Mint stays down
+  # for the rest of this boot. An attempt that seals no capsule leaves the hold.
+  # /run/backup-target tells the parent init this boot must not derive the
+  # access-code key and must not keep the supervisor after the capsule lands.
+  if same_release /run/zns-upgrade/upgrade.toml; then
+    printf 'backup\n' >/run/backup-target || return
+    printf 'hold\n' >"$STATE_DIR/migrate-source.hold" || return
+  fi
   log "running zns-migrate target"
   /usr/local/bin/zns-migrate target \
-    --manifest /upgrade/upgrade.toml \
-    --upgrade-document /upgrade/upgrade.bin \
-    --attestation-bundle /upgrade/upgrade.bundle.jsonl \
+    --manifest /run/zns-upgrade/upgrade.toml \
+    --upgrade-document /run/zns-upgrade/upgrade.bin \
+    --attestation-bundle /run/zns-upgrade/upgrade.bundle.jsonl \
     --transport-dir /migration \
     --output-capsule "$STATE_DIR/keys/zns_seed.capsule" \
     --timeout-secs 86400 >>"$STATE_DIR/log/migrate.log" 2>&1
@@ -334,6 +474,18 @@ watch_target() {
   if [ "$status" -eq 0 ]; then
     printf '%s\n' "$artifact" >"$STATE_DIR/migrate-target.done" || true
     log "migration target finished"
+  fi
+  # A same-release target is a backup. Once the capsule is on this disk the
+  # guest stops. A later boot of this release opens that capsule.
+  if same_release /run/zns-upgrade/upgrade.toml \
+    && [ -f "$STATE_DIR/keys/zns_seed.capsule" ]; then
+    if [ "$status" -ne 0 ]; then
+      log "migration target failed ($status); the capsule is sealed, stopping"
+    fi
+    finish_backup
+    return
+  fi
+  if [ "$status" -eq 0 ]; then
     return
   fi
   log "migration target failed ($status); waiting for an empty transport directory"
@@ -365,9 +517,11 @@ watch_source() {
     return
   fi
   upgrade_ready "$sup" || return
-  artifact="$(artifact_line "$sup")"
-  [ -n "$artifact" ] || return
-  if already_done "$artifact"; then
+  stage_document "$sup" || return
+  identity="$(document_line /run/zns-upgrade)"
+  [ -n "$identity" ] || return
+  if already_done "$identity"; then
+    clear_recorded_backup_hold || return
     return
   fi
   if channel_has "$strn" source.ready offer.bin attestation.bin encrypted_seed.bin \
@@ -387,16 +541,17 @@ watch_source() {
   fi
   log "running zns-migrate source"
   /usr/local/bin/zns-migrate source \
-    --manifest "$sup/upgrade.toml" \
-    --upgrade-document "$sup/upgrade.bin" \
-    --attestation-bundle "$sup/upgrade.bundle.jsonl" \
+    --manifest /run/zns-upgrade/upgrade.toml \
+    --upgrade-document /run/zns-upgrade/upgrade.bin \
+    --attestation-bundle /run/zns-upgrade/upgrade.bundle.jsonl \
     --transport-dir "$strn" \
     --input-capsule "$STATE_DIR/keys/zns_seed.capsule" \
     --timeout-secs 86400 >>"$STATE_DIR/log/migrate.log" 2>&1
   status=$?
   if [ "$status" -eq 0 ]; then
-    printf '%s\n' "$artifact" >"$STATE_DIR/migrate-source.done.new" || return
+    printf '%s\n' "$identity" >"$STATE_DIR/migrate-source.done.new" || return
     mv "$STATE_DIR/migrate-source.done.new" "$STATE_DIR/migrate-source.done" || return
+    clear_recorded_backup_hold || return
     log "migration source finished"
     return
   fi
@@ -415,6 +570,12 @@ migrate_watch() {
   target_wait=0
   told_ceremony=0
   while true; do
+    # Once a backup capsule is sealed, this boot only powers off. The source
+    # watch reads /upgrade-next, and that directory must not start a handoff.
+    if [ -f /run/backup-stopping ]; then
+      sleep 5 || true
+      continue
+    fi
     if grep -q ' /upgrade-next ' /proc/mounts && [ ! -f "$STATE_DIR/keys/zns_seed.capsule" ]; then
       watch_target || true
     else
@@ -605,6 +766,9 @@ while ! wget -O /dev/null http://127.0.0.1:8080/ready 2>/tmp/zebra-ready.err; do
     log "supervisor.log: ${sup_line:-empty}"
     last_err="$err"
   fi
+  if [ -f /run/backup-stopping ] && [ ! -f "$STATE_DIR/migrate-source.hold" ]; then
+    stop_guest
+  fi
   watch_supervisor
   sleep 5 || fatal "sleep failed"
 done
@@ -672,11 +836,28 @@ done
 log "ceremony complete"
 fi
 
+# A same-release backup has the capsule and then powers off. Deriving the
+# access-code key opens that capsule on this boot.
+if [ -f /run/backup-target ]; then
+  await_backup_poweroff
+  while true; do
+    sleep 30 || true
+  done
+fi
+
 print_access_code_key
 
 log "supervisor pid $SUP_PID"
 log "guest logs are in $STATE_DIR/log"
 while true; do
+  if [ -f /run/backup-stopping ]; then
+    while [ -f "$STATE_DIR/migrate-source.hold" ]; do
+      sleep 1 || true
+    done
+    stop_guest
+    sleep 5 || true
+    continue
+  fi
   wait "$SUP_PID" || true
   log "supervisor exited, restarting"
   SUP_PID=""

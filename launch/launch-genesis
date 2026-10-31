@@ -81,7 +81,8 @@ if [[ "$built" != "$network" ]]; then
   exit 1
 fi
 
-mkdir -p "$hops/upgrade-from-${version}" "$hops/transport-from-${version}" "$hops/logs"
+mkdir -p "$hops/upgrade-from-${version}" "$hops/logs"
+open_transport_dir "$hops/transport-from-${version}" "${SUDO_USER:-}"
 if [[ ! -f "$hops/current" ]]; then
   write_current "$hops" "$version"
 fi

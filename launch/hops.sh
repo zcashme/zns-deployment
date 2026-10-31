@@ -106,6 +106,20 @@ write_current() {
   mv "$hops/current.next" "$hops/current"
 }
 
+# The standby account creates the handshake files over SSH. Root QEMU writes
+# the source side as mode 0644. The directory is mode 700 and owned by that
+# account, so that account can enter and read those files. Other accounts
+# cannot enter. The upgrade directory stays root-owned.
+open_transport_dir() {
+  local dir="$1" owner="${2:-}" group
+  mkdir -p "$dir"
+  if [[ -n "$owner" && "$owner" != "root" ]]; then
+    group="$(id -gn "$owner")"
+    chown "$owner:$group" "$dir"
+  fi
+  chmod 700 "$dir"
+}
+
 # GitHub CLI state belongs to the user who invoked sudo. Root's login is a
 # different account and does not see that user's gh credentials.
 operator_gh() {
