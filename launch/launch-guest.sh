@@ -121,6 +121,9 @@ fi
 # zns-forward listens on the guest's external ports. Grafana on this host
 # scrapes mint at 127.0.0.1:${MINT_FWD}/metrics and Zebra at
 # 127.0.0.1:${ZEBRA_FWD}/metrics. These forwards are not part of the measurement.
+# fmode is masked by this process's umask. 022 leaves 0644 on the host, which
+# the account that owns the transport directory can read.
+umask 022
 exec qemu-system-x86_64 \
   -enable-kvm \
   -machine "${MACHINE},confidential-guest-support=sev0,vmport=off" \

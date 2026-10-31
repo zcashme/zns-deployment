@@ -64,7 +64,8 @@ transport_clear() {
 }
 
 # Mount one live-server directory over SSH. The operator's SSH keys are used.
-# allow_other lets the root QEMU process read and write the mount.
+# allow_other lets root QEMU use the mount. default_permissions keeps the
+# remote directory mode in force for every other account.
 mount_live_dir() {
   local remote="$1" local_dir="$2" source
   if findmnt -n "$local_dir" >/dev/null 2>&1; then
@@ -86,11 +87,11 @@ mount_live_dir() {
   fi
   if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
     sudo -u "$SUDO_USER" -- sshfs \
-      -o cache=no,attr_timeout=0,entry_timeout=0,allow_other,ServerAliveInterval=15 \
+      -o cache=no,attr_timeout=0,entry_timeout=0,allow_other,default_permissions,ServerAliveInterval=15 \
       "$remote" "$local_dir"
   else
     sshfs \
-      -o cache=no,attr_timeout=0,entry_timeout=0,allow_other,ServerAliveInterval=15 \
+      -o cache=no,attr_timeout=0,entry_timeout=0,allow_other,default_permissions,ServerAliveInterval=15 \
       "$remote" "$local_dir"
   fi
   echo "mounted $remote on $local_dir"
@@ -99,7 +100,7 @@ mount_live_dir() {
 # live-host, or user@live-host. The remote directories are that user's
 # zns-hops/upgrade-from-<tag> and transport-from-<tag>.
 mount_live_hops() {
-  local tag="$1" spec="$2" live_user live_host remote_hops probe
+  local tag="$1" spec="$2" live_user live_host remote_hops probe mount_root
   if [[ "$spec" == *@* ]]; then
     live_user="${spec%%@*}"
     live_host="${spec#*@}"
@@ -125,8 +126,16 @@ mount_live_hops() {
     fi
   fi
   remote_hops="${ZNS_LIVE_HOPS:-/home/${live_user}/zns-hops}"
-  upgrade="$(hops_root)/backup-mount/${tag}/upgrade"
-  transport="$(hops_root)/backup-mount/${tag}/transport"
+  # The live channel is mounted under this directory. Mode 700, owned by the
+  # operator, so other accounts on this host cannot reach it. Root QEMU can.
+  mount_root="$(hops_root)/backup-mount"
+  mkdir -p "$mount_root/${tag}"
+  if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+    chown "$SUDO_USER:$(id -gn "$SUDO_USER")" "$mount_root" "$mount_root/${tag}"
+  fi
+  chmod 700 "$mount_root" "$mount_root/${tag}"
+  upgrade="$mount_root/${tag}/upgrade"
+  transport="$mount_root/${tag}/transport"
   mount_live_dir "${live_user}@${live_host}:${remote_hops}/upgrade-from-${tag}" "$upgrade"
   mount_live_dir "${live_user}@${live_host}:${remote_hops}/transport-from-${tag}" "$transport"
   probe="$transport/.zns-write-probe"
