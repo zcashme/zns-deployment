@@ -11,7 +11,8 @@ if [[ "$#" -ne 1 || -z "$1" ]]; then
   exit 1
 fi
 line="$1"
-if [[ ! "$line" =~ ^ssh-ed25519[[:space:]]+[A-Za-z0-9+/]+={0,2}([[:space:]]+[^[:space:]]+)?$ ]]; then
+read -r keytype blob _ <<<"$line"
+if [[ "$keytype" != "ssh-ed25519" || ! "$blob" =~ ^[A-Za-z0-9+/]+={0,2}$ ]]; then
   echo "public key must be one ssh-ed25519 line" >&2
   exit 1
 fi
@@ -44,11 +45,15 @@ run_as_user chmod 700 "$home/.ssh"
 run_as_user touch "$auth"
 run_as_user chmod 600 "$auth"
 
-blob="${line#ssh-ed25519 }"
-blob="${blob%% *}"
 if run_as_user grep -qF -- "$blob" "$auth"; then
   echo "live $(hostname) already authorizes this key for $user"
   exit 0
+fi
+if [[ -s "$auth" ]]; then
+  last="$(tail -c 1 "$auth" || true)"
+  if [[ -n "$last" ]]; then
+    printf '\n' | run_as_user tee -a "$auth" >/dev/null
+  fi
 fi
 printf '%s\n' "$line" | run_as_user tee -a "$auth" >/dev/null
 echo "live $(hostname) authorizes this key for $user"

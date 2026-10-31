@@ -218,7 +218,7 @@ publish() {
 }
 
 stand() {
-  local tag upgrade transport hops initrd zns_img zebra_img name console runner
+  local tag upgrade transport hops initrd zns_img zebra_img name console runner running
   local next_upgrade next_transport mint_fwd zebra_fwd session_cmd standard
   if [[ "$#" -ne 2 ]]; then
     usage
@@ -260,10 +260,16 @@ stand() {
   mint_fwd="${ZNS_MINT_FWD:-29465}"
   zebra_fwd="${ZNS_ZEBRA_FWD:-29999}"
 
-  if pgrep -af qemu-system-x86_64 | grep -F -- "-name ${name} -nographic" >/dev/null; then
-    echo "$name is already running in tmux session zns-backup"
-    echo "console: $console"
-    exit 0
+  running="$(pgrep -af qemu-system-x86_64 | grep -F -- "-name ${name} -nographic" || true)"
+  if [[ -n "$running" ]]; then
+    if grep -qF -- "file=${zns_img}," <<<"$running"; then
+      echo "$name is already running for $tag"
+      echo "console: $console"
+      exit 0
+    fi
+    echo "$name is already running for another release" >&2
+    echo "stop that guest before standing up $tag" >&2
+    exit 1
   fi
   if operator_tmux has-session -t zns-backup 2>/dev/null; then
     echo "tmux session zns-backup already exists and $name is not running" >&2

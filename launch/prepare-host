@@ -37,6 +37,7 @@ printf 'deb [arch=%s signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] 
 
 apt-get update
 apt-get install -y --no-install-recommends \
+  cpio \
   e2fsprogs \
   fuse3 \
   gh \
