@@ -118,7 +118,7 @@ That installs QEMU, sshfs, tmux, gh, and the tools that format a disk and unpack
 
 ## Backup
 
-A backup seals this release's capsule onto another machine you own. Both guests run that same release. The live mint stops for the handoff and starts again after the receipt. The standby mint stays down. `current` stays on this release.
+A backup seals this release's capsule onto another machine you own and then that guest stops. Both sides use this same release. The live mint stops for the handoff and starts again after the receipt. `current` stays on this release. The stopped disk is the copy. A later boot of this release on that machine opens the capsule.
 
 The live guest is one that was started on this tag, so it is mounted on `/home/ubuntu/zns-hops/upgrade-from-<tag>` and `transport-from-<tag>`. A guest that just finished `migrate` is still mounted on the previous tag's directories. Start it on this tag before a backup. The transport directory has no handshake files in it. When `publish` says it still has some, that handshake has finished, and those files are removed before `publish` is run again.
 
@@ -156,6 +156,14 @@ The command mounts the live host's upgrade and transport directories over SSH an
 sudo ./launch/backup publish
 ```
 
-7. On the standby console, wait until it logs `migration target finished`. The capsule on that disk is sealed to that machine. `migrate-source.hold` is on the disk, so mint stays down. On the live console, mint stops for the handoff, then the log says `same-release backup accepted; mint hold cleared` and mint starts again.
+7. On the standby console, wait until it logs `migration target finished` and the guest stops. The capsule is on `backup-zns-state.img`, sealed to that machine. On the live console, mint stops for the handoff, then the log says `same-release backup accepted; mint hold cleared` and mint starts again.
 
-To run mint on the standby later, stop that QEMU, mount `backup-zns-state.img`, delete `migrate-source.hold`, and start the guest. With the hold gone, mint starts once Zebra is ready and opens the capsule with that machine's sealing key.
+To run this copy, stop the live guest and leave that session closed. On the backup machine, start this same release with those two disks:
+
+```bash
+sudo ZNS_STATE_IMG=/home/ubuntu/zns-hops/images/v0.1.x/backup-zns-state.img \
+  ZEBRA_STATE_IMG=/home/ubuntu/zns-hops/images/v0.1.x/backup-zebra-state.img \
+  ./launch/launch-genesis v0.1.x
+```
+
+That boot opens the capsule and starts mint. The live guest stays stopped, so one mint has the seed.

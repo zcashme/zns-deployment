@@ -37,6 +37,18 @@ fatal() {
   exit 1
 }
 
+# QEMU is started with -no-reboot, so reboot exits QEMU. This BusyBox has
+# reboot and not poweroff.
+stop_guest() {
+  sync || true
+  log "stopping"
+  if [ -w /proc/sysrq-trigger ]; then
+    echo 1 > /proc/sys/kernel/sysrq 2>/dev/null || true
+    echo o > /proc/sysrq-trigger 2>/dev/null || true
+  fi
+  reboot -f 2>/dev/null || true
+}
+
 export HOME=/root
 export ZCASH_PARAMS_DIR="$PARAMS_DIR"
 export PATH=/usr/local/bin:/sbin:/usr/sbin:/bin:/usr/bin
@@ -301,6 +313,15 @@ same_release() {
   [ -n "$from" ] && [ "$from" = "$to" ]
 }
 
+# A finished same-release backup leaves the hold file absent. The done file
+# can already be in place while the hold file is still there.
+clear_same_release_hold() {
+  same_release "$1" || return 0
+  [ -f "$STATE_DIR/migrate-source.hold" ] || return 0
+  rm -f "$STATE_DIR/migrate-source.hold" || return 1
+  log "same-release backup accepted; mint hold cleared"
+}
+
 ceremony_complete() {
   # The custody manifest is the completion record: keygen writes it at
   # finalize, and a migration target installs it beside the capsule.
@@ -357,6 +378,11 @@ watch_target() {
   if [ "$status" -eq 0 ]; then
     printf '%s\n' "$artifact" >"$STATE_DIR/migrate-target.done" || true
     log "migration target finished"
+    # A same-release target is a backup. The capsule is on this disk. The
+    # guest stops. A later boot of this release opens that capsule.
+    if same_release /upgrade/upgrade.toml; then
+      stop_guest
+    fi
     return
   fi
   log "migration target failed ($status); waiting for an empty transport directory"
@@ -391,6 +417,7 @@ watch_source() {
   identity="$(document_line "$sup")"
   [ -n "$identity" ] || return
   if already_done "$identity"; then
+    clear_same_release_hold "$sup/upgrade.toml" || return
     return
   fi
   if channel_has "$strn" source.ready offer.bin attestation.bin encrypted_seed.bin \
@@ -420,10 +447,7 @@ watch_source() {
   if [ "$status" -eq 0 ]; then
     printf '%s\n' "$identity" >"$STATE_DIR/migrate-source.done.new" || return
     mv "$STATE_DIR/migrate-source.done.new" "$STATE_DIR/migrate-source.done" || return
-    if same_release "$sup/upgrade.toml"; then
-      rm -f "$STATE_DIR/migrate-source.hold" || return
-      log "same-release backup accepted; mint hold cleared"
-    fi
+    clear_same_release_hold "$sup/upgrade.toml" || return
     log "migration source finished"
     return
   fi
