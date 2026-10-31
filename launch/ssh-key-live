@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Live machine: install a standby public key for the account stand logs in as.
 #
-#   sudo ./launch/ssh-key-live 'ssh-ed25519 AAAA... zns-backup@standby-hostname'
+#   sudo ZNS_NETWORK=testnet ./launch/ssh-key-live 'ssh-ed25519 AAAA... zns-backup@standby-hostname'
 #
 # The account is the one that invoked sudo. The same line is not added twice.
 # The live transport directory is made writable by that account.

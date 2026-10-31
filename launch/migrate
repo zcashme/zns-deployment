@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Publish an upgrade to the live guest and record the new tag after it lands.
 #
-#   sudo ./launch/migrate v0.1.x
+#   sudo ZNS_NETWORK=testnet ./launch/migrate v0.1.x
 #
 # The live guest is already running from launch-genesis. This command fetches
 # the named release, boots the target against that guest's hop directories,
@@ -103,10 +103,11 @@ target_pid() {
 }
 
 wait_for_receipt() {
-  local pid="$1"
+  local pid="$1" target_session
   echo "waiting for $receipt"
   ticks=0
-  trap 'echo "target qemu is still running (pid $pid) in tmux session zns-target"; echo "current stays $from until $receipt"; exit 130' INT
+  target_session="$(guest_session target)"
+  trap "echo \"target qemu is still running (pid $pid) in tmux session ${target_session}\"; echo \"current stays $from until $receipt\"; exit 130" INT
   while [[ ! -s "$receipt" ]]; do
     if ! kill -0 "$pid" 2>/dev/null; then
       echo "target qemu exited before receipt.bin" >&2
