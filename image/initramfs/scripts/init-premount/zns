@@ -431,11 +431,20 @@ already_done() {
 
 # The target guest publishes target.synced after it pauses its mint.
 # This mint stops, then source.paused lets that guest continue it.
-# Until target.synced is present, source.cutover stays published and the
-# hold from the seed handoff stays absent.
+# Until target.synced is present, source.cutover stays published and this
+# mint serves.
 advance_cutover() {
   strn="$1"
   if [ -f "$strn/source.paused" ]; then
+    return 0
+  fi
+  # A target on a release without the pause, such as a rollback, starts its
+  # mint on its own. This mint then stops for good, as before.
+  if [ ! -f "$strn/target.pauses" ]; then
+    if [ ! -f "$STATE_DIR/migrate-source.hold" ]; then
+      printf 'hold\n' >"$STATE_DIR/migrate-source.hold" || return 1
+      log "target cannot pause its mint; stopping this mint for good"
+    fi
     return 0
   fi
   if [ ! -f "$strn/target.synced" ]; then
@@ -458,14 +467,15 @@ advance_cutover() {
   fi
   printf 'paused\n' >"$strn/source.paused.new" || return 1
   mv "$strn/source.paused.new" "$strn/source.paused" || return 1
-  log "previous mint is stopped; the target mint can run"
+  log "this mint is stopped for good; the target mint can run"
   return 0
 }
 
-# zns_mint_serving is 0 when the wallet scan is finished and the run loop
-# has not started. This guest stops that process, publishes target.synced,
-# and continues the process once source.paused is present. source.cutover
-# means the source brought its mint back while this guest syncs.
+# zns_mint_serving appears once the wallet scan is finished: 0 before the run
+# loop, 1 after. Either way mint has not acted yet, since it acts on blocks.
+# This guest stops that process, publishes target.synced, and continues it
+# once source.paused is present. source.cutover means the source mint is
+# serving while this guest syncs.
 pause_mint_for_cutover() {
   if [ -f /run/mint-released ] || [ -f /run/backup-target ]; then
     return 0
@@ -510,11 +520,12 @@ pause_mint_for_cutover() {
     return 0
   fi
   serving="$(metric_int /tmp/zns-mint-serving zns_mint_serving)"
-  if [ "$serving" = "1" ]; then
-    printf 'released\n' >/run/mint-released || return 1
-    log "mint entered its run loop"
-    return 0
-  fi
+  # 0: the wallet scan is done. 1: the run loop has started, but mint acts
+  # only on the next block, so a pause now still comes before its first act.
+  case "$serving" in
+    0 | 1) ;;
+    *) return 0 ;;
+  esac
   mint_pids="$(pidof zns-mint 2>/dev/null || true)"
   if [ -z "$mint_pids" ]; then
     return 0
@@ -533,7 +544,7 @@ pause_mint_for_cutover() {
   return 0
 }
 
-# True while this target still has to catch zns_mint_serving at 0.
+# True while this target still has to pause its mint.
 cutover_pending() {
   [ -f /run/mint-released ] && return 1
   [ -f /run/backup-target ] && return 1
@@ -579,6 +590,9 @@ watch_target() {
     printf 'hold\n' >"$STATE_DIR/migrate-source.hold" || return
   else
     rm -f /migration/source.cutover /migration/target.synced /migration/source.paused
+    # This release pauses its mint for the cutover. A source keeps serving
+    # after the handoff only when it sees this file.
+    printf 'pauses\n' >/migration/target.pauses || return
   fi
   log "running zns-migrate target"
   /usr/local/bin/zns-migrate target \
@@ -654,13 +668,17 @@ watch_source() {
     return
   fi
   rm -f "$strn/source.cutover" "$strn/target.synced" "$strn/source.paused"
-  printf 'hold\n' >"$STATE_DIR/migrate-source.hold" || return
-  # The supervisor checks the hold file every 30s. Wait out one pass so mint
-  # is stopped before the capsule is read.
-  sleep 31 || return
-  if pidof zns-mint >/dev/null 2>&1; then
-    log "mint still running; migration will wait"
-    return
+  # A backup stops mint for the handoff. A move to another release does not:
+  # mint reads the capsule only at boot, and a restart would rescan the wallet.
+  if same_release /run/zns-upgrade/upgrade.toml; then
+    printf 'hold\n' >"$STATE_DIR/migrate-source.hold" || return
+    # The supervisor checks the hold file every 30s. Wait out one pass so mint
+    # is stopped before the capsule is read.
+    sleep 31 || return
+    if pidof zns-mint >/dev/null 2>&1; then
+      log "mint still running; migration will wait"
+      return
+    fi
   fi
   log "running zns-migrate source"
   /usr/local/bin/zns-migrate source \
@@ -679,10 +697,7 @@ watch_source() {
       log "migration source finished"
       return
     fi
-    printf 'cutover\n' >"$strn/source.cutover.new" || return
-    mv "$strn/source.cutover.new" "$strn/source.cutover" || return
-    rm -f "$STATE_DIR/migrate-source.hold" || return
-    log "seed is on the target; this mint runs while that guest syncs"
+    advance_cutover "$strn" || return
     return
   fi
   rm -f "$STATE_DIR/migrate-source.hold" || true
@@ -712,7 +727,7 @@ migrate_watch() {
       watch_source || true
       pause_mint_for_cutover || true
     fi
-    # zns_mint_serving stays 0 only until the tip session opens.
+    # Poll fast so the pause lands before mint's first block.
     if cutover_pending; then
       sleep 0.2 || true
     else
