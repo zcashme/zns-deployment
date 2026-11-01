@@ -445,9 +445,7 @@ advance_cutover() {
       printf 'hold\n' >"$STATE_DIR/migrate-source.hold" || return 1
       log "target cannot pause its mint; stopping this mint for good"
     fi
-    return 0
-  fi
-  if [ ! -f "$strn/target.synced" ]; then
+  elif [ ! -f "$strn/target.synced" ]; then
     if [ ! -f "$strn/source.cutover" ]; then
       printf 'cutover\n' >"$strn/source.cutover.new" || return 1
       mv "$strn/source.cutover.new" "$strn/source.cutover" || return 1
@@ -456,8 +454,7 @@ advance_cutover() {
       rm -f "$STATE_DIR/migrate-source.hold" || return 1
     fi
     return 0
-  fi
-  if [ ! -f "$STATE_DIR/migrate-source.hold" ]; then
+  elif [ ! -f "$STATE_DIR/migrate-source.hold" ]; then
     printf 'hold\n' >"$STATE_DIR/migrate-source.hold" || return 1
     log "target wallet is at the tip; stopping this mint"
     return 0
@@ -472,7 +469,10 @@ advance_cutover() {
 }
 
 # zns_mint_serving appears once the wallet scan is finished: 0 before the run
-# loop, 1 after. Either way mint has not acted yet, since it acts on blocks.
+# loop, 1 after. Zebra sends the current tip to a new subscriber at once, so
+# the first pass starts at 1. That pass reads the price, the tip and the fee
+# rate and builds proofs before it submits anything, which takes seconds. The
+# 0.2s poll below stops mint well before that.
 # This guest stops that process, publishes target.synced, and continues it
 # once source.paused is present. source.cutover means the source mint is
 # serving while this guest syncs.
@@ -520,8 +520,8 @@ pause_mint_for_cutover() {
     return 0
   fi
   serving="$(metric_int /tmp/zns-mint-serving zns_mint_serving)"
-  # 0: the wallet scan is done. 1: the run loop has started, but mint acts
-  # only on the next block, so a pause now still comes before its first act.
+  # 0: the wallet scan is done. 1: the first pass has started and has
+  # seconds of reads and proving ahead of its first submit.
   case "$serving" in
     0 | 1) ;;
     *) return 0 ;;
