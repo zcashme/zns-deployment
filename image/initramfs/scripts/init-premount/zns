@@ -429,7 +429,135 @@ already_done() {
   [ "$done_line" = "$line" ]
 }
 
+# The target guest publishes target.synced after it pauses its mint.
+# This mint stops, then source.paused lets that guest continue it.
+# Until target.synced is present, source.cutover stays published and this
+# mint serves.
+advance_cutover() {
+  strn="$1"
+  if [ -f "$strn/source.paused" ]; then
+    return 0
+  fi
+  # A target on a release without the pause, such as a rollback, starts its
+  # mint on its own. This mint then stops for good, as before.
+  if [ ! -f "$strn/target.pauses" ]; then
+    if [ ! -f "$STATE_DIR/migrate-source.hold" ]; then
+      printf 'hold\n' >"$STATE_DIR/migrate-source.hold" || return 1
+      log "target cannot pause its mint; stopping this mint for good"
+    fi
+  elif [ ! -f "$strn/target.synced" ]; then
+    if [ ! -f "$strn/source.cutover" ]; then
+      printf 'cutover\n' >"$strn/source.cutover.new" || return 1
+      mv "$strn/source.cutover.new" "$strn/source.cutover" || return 1
+    fi
+    if [ -f "$STATE_DIR/migrate-source.hold" ]; then
+      rm -f "$STATE_DIR/migrate-source.hold" || return 1
+    fi
+    return 0
+  elif [ ! -f "$STATE_DIR/migrate-source.hold" ]; then
+    printf 'hold\n' >"$STATE_DIR/migrate-source.hold" || return 1
+    log "target wallet is at the tip; stopping this mint"
+    return 0
+  fi
+  if pidof zns-mint >/dev/null 2>&1; then
+    return 0
+  fi
+  printf 'paused\n' >"$strn/source.paused.new" || return 1
+  mv "$strn/source.paused.new" "$strn/source.paused" || return 1
+  log "this mint is stopped for good; the target mint can run"
+  return 0
+}
+
+# zns_mint_serving appears once the wallet scan is finished: 0 before the run
+# loop, 1 after. Zebra sends the current tip to a new subscriber at once, so
+# the first pass starts at 1. That pass reads the price, the tip and the fee
+# rate and builds proofs before it submits anything, which takes seconds. The
+# 0.2s poll below stops mint well before that.
+# This guest stops that process, publishes target.synced, and continues it
+# once source.paused is present. source.cutover means the source mint is
+# serving while this guest syncs.
+pause_mint_for_cutover() {
+  if [ -f /run/mint-released ] || [ -f /run/backup-target ]; then
+    return 0
+  fi
+  if ! grep -q ' /upgrade-next ' /proc/mounts; then
+    return 0
+  fi
+  if [ ! -f "$STATE_DIR/keys/zns_seed.capsule" ]; then
+    return 0
+  fi
+  if [ ! -f /migration/source.cutover ]; then
+    return 0
+  fi
+  if [ -f /migration/source.paused ]; then
+    if [ -f /run/mint-paused ]; then
+      mint_pids="$(pidof zns-mint 2>/dev/null || true)"
+      if [ -n "$mint_pids" ]; then
+        # shellcheck disable=SC2086
+        kill -CONT $mint_pids || return 1
+      fi
+      rm -f /run/mint-paused || return 1
+    fi
+    if [ ! -f /run/mint-released ]; then
+      printf 'released\n' >/run/mint-released || return 1
+      log "previous mint is stopped; this mint is running"
+    fi
+    return 0
+  fi
+  if [ -f /run/mint-paused ]; then
+    if ! pidof zns-mint >/dev/null 2>&1; then
+      rm -f /run/mint-paused || return 1
+      return 0
+    fi
+    if [ ! -f /migration/target.synced ]; then
+      printf 'synced\n' >/migration/target.synced.new || return 1
+      mv /migration/target.synced.new /migration/target.synced || return 1
+      log "wallet is at the tip; this mint is paused until the previous mint stops"
+    fi
+    return 0
+  fi
+  if ! wget -q -O /tmp/zns-mint-serving http://127.0.0.1:9464/metrics 2>/dev/null; then
+    return 0
+  fi
+  serving="$(metric_int /tmp/zns-mint-serving zns_mint_serving)"
+  # 0: the wallet scan is done. 1: the first pass has started and has
+  # seconds of reads and proving ahead of its first submit.
+  case "$serving" in
+    0 | 1) ;;
+    *) return 0 ;;
+  esac
+  mint_pids="$(pidof zns-mint 2>/dev/null || true)"
+  if [ -z "$mint_pids" ]; then
+    return 0
+  fi
+  printf 'paused\n' >/run/mint-paused || return 1
+  # shellcheck disable=SC2086
+  kill -STOP $mint_pids || {
+    rm -f /run/mint-paused || true
+    return 1
+  }
+  if [ ! -f /migration/target.synced ]; then
+    printf 'synced\n' >/migration/target.synced.new || return 1
+    mv /migration/target.synced.new /migration/target.synced || return 1
+  fi
+  log "wallet is at the tip; this mint is paused until the previous mint stops"
+  return 0
+}
+
+# True while this target still has to pause its mint.
+cutover_pending() {
+  [ -f /run/mint-released ] && return 1
+  [ -f /run/backup-target ] && return 1
+  grep -q ' /upgrade-next ' /proc/mounts || return 1
+  [ -f "$STATE_DIR/keys/zns_seed.capsule" ] || return 1
+  [ -f /migration/source.cutover ] || return 1
+  return 0
+}
+
 watch_target() {
+  if [ -f "$STATE_DIR/migrate-target.done" ]; then
+    return 0
+  fi
   if [ "$target_wait" -eq 1 ]; then
     if channel_has /migration offer.bin attestation.bin encrypted_seed.bin \
       source_attestation.bin receipt.bin receipt_attestation.bin \
@@ -454,13 +582,17 @@ watch_target() {
     return
   fi
   mkdir -p "$STATE_DIR/keys" || return
-  # The hold is in place before the capsule is installed. Mint stays down
-  # for the rest of this boot. An attempt that seals no capsule leaves the hold.
-  # /run/backup-target tells the parent init this boot must not derive the
-  # access-code key and must not keep the supervisor after the capsule lands.
+  # A same-release target is a backup. The hold is in place before the
+  # capsule is installed. /run/backup-target tells the parent init this boot
+  # must not derive the access-code key and must power off after the capsule lands.
   if same_release /run/zns-upgrade/upgrade.toml; then
     printf 'backup\n' >/run/backup-target || return
     printf 'hold\n' >"$STATE_DIR/migrate-source.hold" || return
+  else
+    rm -f /migration/source.cutover /migration/target.synced /migration/source.paused
+    # This release pauses its mint for the cutover. A source keeps serving
+    # after the handoff only when it sees this file.
+    printf 'pauses\n' >/migration/target.pauses || return
   fi
   log "running zns-migrate target"
   /usr/local/bin/zns-migrate target \
@@ -521,7 +653,11 @@ watch_source() {
   identity="$(document_line /run/zns-upgrade)"
   [ -n "$identity" ] || return
   if already_done "$identity"; then
-    clear_recorded_backup_hold || return
+    if same_release /run/zns-upgrade/upgrade.toml; then
+      clear_recorded_backup_hold || return
+    else
+      advance_cutover "$strn" || return
+    fi
     return
   fi
   if channel_has "$strn" source.ready offer.bin attestation.bin encrypted_seed.bin \
@@ -531,13 +667,18 @@ watch_source() {
     source_wait=1
     return
   fi
-  printf 'hold\n' >"$STATE_DIR/migrate-source.hold" || return
-  # The supervisor checks the hold file every 30s. Wait out one pass so mint
-  # is stopped before the capsule is read.
-  sleep 31 || return
-  if pidof zns-mint >/dev/null 2>&1; then
-    log "mint still running; migration will wait"
-    return
+  rm -f "$strn/source.cutover" "$strn/target.synced" "$strn/source.paused"
+  # A backup stops mint for the handoff. A move to another release does not:
+  # mint reads the capsule only at boot, and a restart would rescan the wallet.
+  if same_release /run/zns-upgrade/upgrade.toml; then
+    printf 'hold\n' >"$STATE_DIR/migrate-source.hold" || return
+    # The supervisor checks the hold file every 30s. Wait out one pass so mint
+    # is stopped before the capsule is read.
+    sleep 31 || return
+    if pidof zns-mint >/dev/null 2>&1; then
+      log "mint still running; migration will wait"
+      return
+    fi
   fi
   log "running zns-migrate source"
   /usr/local/bin/zns-migrate source \
@@ -551,8 +692,12 @@ watch_source() {
   if [ "$status" -eq 0 ]; then
     printf '%s\n' "$identity" >"$STATE_DIR/migrate-source.done.new" || return
     mv "$STATE_DIR/migrate-source.done.new" "$STATE_DIR/migrate-source.done" || return
-    clear_recorded_backup_hold || return
-    log "migration source finished"
+    if same_release /run/zns-upgrade/upgrade.toml; then
+      clear_recorded_backup_hold || return
+      log "migration source finished"
+      return
+    fi
+    advance_cutover "$strn" || return
     return
   fi
   rm -f "$STATE_DIR/migrate-source.hold" || true
@@ -580,8 +725,14 @@ migrate_watch() {
       watch_target || true
     else
       watch_source || true
+      pause_mint_for_cutover || true
     fi
-    sleep 5 || true
+    # Poll fast so the pause lands before mint's first block.
+    if cutover_pending; then
+      sleep 0.2 || true
+    else
+      sleep 5 || true
+    fi
   done
 }
 
