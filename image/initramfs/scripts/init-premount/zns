@@ -578,13 +578,17 @@ watch_source() {
     source_wait=1
     return
   fi
-  printf 'hold\n' >"$STATE_DIR/migrate-source.hold" || return
-  # The supervisor checks the hold file every 30s. Wait out one pass so mint
-  # is stopped before the capsule is read.
-  sleep 31 || return
-  if pidof zns-mint >/dev/null 2>&1; then
-    log "mint still running; migration will wait"
-    return
+  # A backup stops mint for the handoff. A move to another release does not:
+  # the target's hold keeps its mint off until cutover_source stops this one.
+  if same_release /run/zns-upgrade/upgrade.toml; then
+    printf 'hold\n' >"$STATE_DIR/migrate-source.hold" || return
+    # The supervisor checks the hold file every 30s. Wait out one pass so mint
+    # is stopped before the capsule is read.
+    sleep 31 || return
+    if pidof zns-mint >/dev/null 2>&1; then
+      log "mint still running; migration will wait"
+      return
+    fi
   fi
   log "running zns-migrate source"
   /usr/local/bin/zns-migrate source \
@@ -603,8 +607,7 @@ watch_source() {
       log "migration source finished"
       return
     fi
-    rm -f "$STATE_DIR/migrate-source.hold" || return
-    log "seed is on the target; this mint runs while that guest syncs"
+    log "seed is on the target; this mint serves while that guest syncs"
     return
   fi
   rm -f "$STATE_DIR/migrate-source.hold" || true
