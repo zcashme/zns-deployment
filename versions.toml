@@ -5,7 +5,7 @@ mint_repo = "https://github.com/zcashme/zns-mint.git"
 mint_commit = "e9883523ceaf8b662682d0ffe14714142b7d9b1b"
 
 keygen_repo = "https://github.com/zcashme/zns-keygen.git"
-keygen_commit = "a31b400cf39bb3febafdba5168932e8a16050f55"
+keygen_commit = "09ada9ec4733ae980f4a8a0cc0f6b438dcc6c446"
 
 migrate_repo = "https://github.com/zcashme/zns-migrate.git"
 migrate_commit = "c411aa5d6ab7527ae2178487b34706ad9a1f0601"
