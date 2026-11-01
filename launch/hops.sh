@@ -293,13 +293,13 @@ claim_source_session() {
     fi
     operator_tmux rename-session -t "$source" "$previous"
     console_line "$previous" "Switched from ${source} to ${previous} in tmux."
-    console_line "$previous" "The version ${to} is up. This version ${from} can be safely retired."
+    console_line "$previous" "The version ${to} has the seed. Keep ${from} running until this console says this mint is stopped for good."
     retired=1
   fi
   operator_tmux rename-session -t "$target" "$source"
   console_line "$source" "Switched from ${target} to ${source} in tmux."
   if [[ "$retired" -eq 0 ]]; then
-    echo "The version ${to} is up. This version ${from} can be safely retired."
+    echo "The version ${to} has the seed. Keep ${from} running until its console says this mint is stopped for good."
   fi
 }
 
