@@ -471,6 +471,7 @@ watch_target() {
   if [ "$target_wait" -eq 1 ]; then
     if channel_has /migration offer.bin attestation.bin encrypted_seed.bin \
       source_attestation.bin receipt.bin receipt_attestation.bin \
+      target_ready_attestation.bin source_stopped_attestation.bin \
       zns_mint.conf zns_custody_manifest.toml ceremony_state.toml; then
       return
     fi
@@ -486,6 +487,7 @@ watch_target() {
   # is a previous attempt.
   if channel_has /migration offer.bin attestation.bin encrypted_seed.bin \
     source_attestation.bin receipt.bin receipt_attestation.bin \
+    target_ready_attestation.bin source_stopped_attestation.bin \
     zns_mint.conf zns_custody_manifest.toml ceremony_state.toml; then
     log "migration transport is not empty; target is waiting for it to be cleared"
     target_wait=1
@@ -542,6 +544,7 @@ watch_source() {
   if [ "$source_wait" -eq 1 ]; then
     if channel_has "$strn" source.ready offer.bin attestation.bin encrypted_seed.bin \
       source_attestation.bin receipt.bin receipt_attestation.bin \
+      target_ready_attestation.bin source_stopped_attestation.bin \
       zns_mint.conf zns_custody_manifest.toml ceremony_state.toml; then
       return
     fi
@@ -569,6 +572,7 @@ watch_source() {
   fi
   if channel_has "$strn" source.ready offer.bin attestation.bin encrypted_seed.bin \
     source_attestation.bin receipt.bin receipt_attestation.bin \
+    target_ready_attestation.bin source_stopped_attestation.bin \
     zns_mint.conf zns_custody_manifest.toml ceremony_state.toml; then
     log "migration transport is not empty; source is waiting for it to be cleared"
     source_wait=1

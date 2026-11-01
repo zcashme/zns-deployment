@@ -55,6 +55,7 @@ transport_clear() {
   local dir="$1" name
   for name in source.ready offer.bin attestation.bin encrypted_seed.bin \
     source_attestation.bin receipt.bin receipt_attestation.bin \
+    target_ready_attestation.bin source_stopped_attestation.bin \
     zns_mint.conf zns_custody_manifest.toml ceremony_state.toml; do
     if [[ -e "$dir/$name" ]]; then
       echo "$dir still has $name" >&2
