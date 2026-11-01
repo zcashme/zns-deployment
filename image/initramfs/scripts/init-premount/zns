@@ -429,40 +429,50 @@ already_done() {
   [ "$done_line" = "$line" ]
 }
 
-# After a handoff to another release this mint serves until the target is
-# synced. zns-migrate cutover then writes the hold back for good.
+# After a handoff to another release this mint serves until the target
+# writes target.ready. That file is not attested: a forged one only stops
+# this mint early. The hold stays for good, then zns-migrate attests it.
 cutover_source() {
   [ -f "$STATE_DIR/migrate-source.cutover" ] && return 0
-  log "running zns-migrate cutover source"
+  [ -f "$1/target.ready" ] || return 0
+  if [ ! -f "$STATE_DIR/migrate-source.hold" ]; then
+    printf 'hold\n' >"$STATE_DIR/migrate-source.hold" || return
+    log "target is ready; stopping this mint for good"
+  fi
+  # The supervisor checks the hold file every 30s.
+  sleep 31 || return
+  if pidof zns-mint >/dev/null 2>&1; then
+    return
+  fi
   /usr/local/bin/zns-migrate cutover source \
     --manifest /run/zns-upgrade/upgrade.toml \
     --upgrade-document /run/zns-upgrade/upgrade.bin \
     --attestation-bundle /run/zns-upgrade/upgrade.bundle.jsonl \
-    --transport-dir "$1" \
-    --hold "$STATE_DIR/migrate-source.hold" \
-    --after /run/mint-stopped \
-    --timeout-secs 86400 >>"$STATE_DIR/log/migrate.log" 2>&1 || return
+    --transport-dir "$1" >>"$STATE_DIR/log/migrate.log" 2>&1 || return
   printf 'cutover\n' >"$STATE_DIR/migrate-source.cutover" || return
   log "this mint is stopped for good; the target mint can run"
 }
 
-# A target that took the seed from another release keeps its hold until the
-# source mint has stopped. zns-migrate cutover removes the hold.
+# A target that took the seed from another release keeps its hold until
+# zns-migrate has checked the source's attested stop.
 cutover_target() {
   grep -q ' /upgrade-next ' /proc/mounts || return 0
   [ -f "$STATE_DIR/migrate-target.done" ] || return 0
   [ -f "$STATE_DIR/migrate-target.cutover" ] && return 0
   stage_document /upgrade || return 1
   same_release /run/zns-upgrade/upgrade.toml && return 0
-  log "running zns-migrate cutover target"
+  http_ok http://127.0.0.1:8080/ready || return 1
+  if [ ! -f /migration/target.ready ]; then
+    printf 'ready\n' >/migration/target.ready || return 1
+    log "zebra is ready; asking the previous mint to stop"
+  fi
   /usr/local/bin/zns-migrate cutover target \
     --manifest /run/zns-upgrade/upgrade.toml \
     --upgrade-document /run/zns-upgrade/upgrade.bin \
     --attestation-bundle /run/zns-upgrade/upgrade.bundle.jsonl \
     --transport-dir /migration \
-    --hold "$STATE_DIR/migrate-source.hold" \
-    --after /run/zebra-ready \
     --timeout-secs 86400 >>"$STATE_DIR/log/migrate.log" 2>&1 || return 1
+  rm -f "$STATE_DIR/migrate-source.hold" || return 1
   printf 'cutover\n' >"$STATE_DIR/migrate-target.cutover" || return 1
   log "previous mint is stopped; this mint can run"
 }
@@ -471,8 +481,8 @@ watch_target() {
   if [ "$target_wait" -eq 1 ]; then
     if channel_has /migration offer.bin attestation.bin encrypted_seed.bin \
       source_attestation.bin receipt.bin receipt_attestation.bin \
-      target_ready_attestation.bin source_stopped_attestation.bin \
-      zns_mint.conf zns_custody_manifest.toml ceremony_state.toml; then
+      target.ready source_stopped_attestation.bin \
+      zns_custody_manifest.toml; then
       return
     fi
     target_wait=0
@@ -487,8 +497,8 @@ watch_target() {
   # is a previous attempt.
   if channel_has /migration offer.bin attestation.bin encrypted_seed.bin \
     source_attestation.bin receipt.bin receipt_attestation.bin \
-    target_ready_attestation.bin source_stopped_attestation.bin \
-    zns_mint.conf zns_custody_manifest.toml ceremony_state.toml; then
+    target.ready source_stopped_attestation.bin \
+    zns_custody_manifest.toml; then
     log "migration transport is not empty; target is waiting for it to be cleared"
     target_wait=1
     return
@@ -544,8 +554,8 @@ watch_source() {
   if [ "$source_wait" -eq 1 ]; then
     if channel_has "$strn" source.ready offer.bin attestation.bin encrypted_seed.bin \
       source_attestation.bin receipt.bin receipt_attestation.bin \
-      target_ready_attestation.bin source_stopped_attestation.bin \
-      zns_mint.conf zns_custody_manifest.toml ceremony_state.toml; then
+      target.ready source_stopped_attestation.bin \
+      zns_custody_manifest.toml; then
       return
     fi
     source_wait=0
@@ -572,8 +582,8 @@ watch_source() {
   fi
   if channel_has "$strn" source.ready offer.bin attestation.bin encrypted_seed.bin \
     source_attestation.bin receipt.bin receipt_attestation.bin \
-    target_ready_attestation.bin source_stopped_attestation.bin \
-    zns_mint.conf zns_custody_manifest.toml ceremony_state.toml; then
+    target.ready source_stopped_attestation.bin \
+    zns_custody_manifest.toml; then
     log "migration transport is not empty; source is waiting for it to be cleared"
     source_wait=1
     return

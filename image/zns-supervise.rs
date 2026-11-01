@@ -4,14 +4,11 @@
 //! has passed /metrics, restart that process once three checks fail. Leave
 //! Zebra alone during its first sync. Start mint only while Zebra's /ready
 //! check is succeeding and the ceremony is complete. A migrate-source.hold
-//! file keeps mint stopped. Migration writes and removes it. /run/backup-stopping
-//! keeps mint stopped as well. The backup guest writes that file before
-//! removing the hold and powering off. The file is on tmpfs, so the next boot
-//! does not have it.
-//!
-//! Two facts for zns-migrate cutover, both on tmpfs. /run/zebra-ready: Zebra
-//! has passed /ready this boot. /run/mint-stopped: a pass saw the hold and
-//! mint was not running. Nothing removes them here.
+//! file keeps mint stopped. The source guest writes it before unsealing. A
+//! move to another release leaves it. A same-release backup removes it
+//! after the receipt is accepted. /run/backup-stopping keeps mint stopped
+//! as well. The backup guest writes that file before removing the hold and
+//! powering off. The file is on tmpfs, so the next boot does not have it.
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -44,8 +41,6 @@ const ZEBRA: &str = "/usr/local/bin/zebrad";
 const MINT: &str = "/usr/local/bin/zns-mint";
 const FORWARD: &str = "/usr/local/bin/zns-forward";
 const MIGRATE_HOLD: &str = "/state/migrate-source.hold";
-const ZEBRA_READY: &str = "/run/zebra-ready";
-const MINT_STOPPED: &str = "/run/mint-stopped";
 const BACKUP_STOPPING: &str = "/run/backup-stopping";
 
 extern "C" {
@@ -268,12 +263,6 @@ fn migration_holds_mint() -> bool {
     std::fs::metadata(MIGRATE_HOLD).is_ok() || std::fs::metadata(BACKUP_STOPPING).is_ok()
 }
 
-fn mark(path: &str) {
-    if std::fs::metadata(path).is_err() {
-        let _ = File::create(path);
-    }
-}
-
 fn ensure_forward() {
     if living_pid(FORWARD).is_some() {
         return;
@@ -290,9 +279,6 @@ impl Watch {
                 stop_pid(pid);
                 self.mint_ready = false;
                 self.mint_misses = 0;
-            }
-            if living_pid(MINT).is_none() {
-                mark(MINT_STOPPED);
             }
             return;
         }
@@ -350,7 +336,6 @@ impl Watch {
             if !self.zebra_seen_ready {
                 log_msg("zebra is ready");
             }
-            mark(ZEBRA_READY);
             self.zebra_seen_ready = true;
             self.zebra_ready_now = true;
             self.zebra_misses = 0;
