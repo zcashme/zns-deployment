@@ -471,6 +471,7 @@ cutover_target() {
     --upgrade-document /run/zns-upgrade/upgrade.bin \
     --attestation-bundle /run/zns-upgrade/upgrade.bundle.jsonl \
     --transport-dir /migration \
+    --output-capsule "$STATE_DIR/keys/zns_seed.capsule" \
     --timeout-secs 86400 >>"$STATE_DIR/log/migrate.log" 2>&1 || return 1
   rm -f "$STATE_DIR/migrate-source.hold" || return 1
   printf 'cutover\n' >"$STATE_DIR/migrate-target.cutover" || return 1
