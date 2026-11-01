@@ -79,6 +79,13 @@ check_cpu
 MINT_FWD="${ZNS_MINT_FWD:-9465}"
 ZEBRA_FWD="${ZNS_ZEBRA_FWD:-9999}"
 QEMU_NAME="${ZNS_QEMU_NAME:-zns-guest}"
+# zns-migrate creates channel files as mode 0600. A writable export on a
+# filesystem that stores user xattrs uses host mode 0644. The transport
+# directory is mode 700 and owned by the operator, so that account can read
+# what root QEMU creates and other accounts cannot enter. An export without
+# user xattrs, such as the SSH mount, keeps security_model=none: those files
+# are created as the SSH user, and root can read them. A read-only export
+# keeps the files publish wrote.
 ninep_args=()
 if [[ -n "${ZNS_9P:-}" ]]; then
   IFS=';' read -r -a specs <<<"${ZNS_9P}"
@@ -90,10 +97,19 @@ if [[ -n "${ZNS_9P:-}" ]]; then
       echo "bad 9p mount: ${spec}" >&2
       exit 1
     fi
-    opt="local,id=fs${i},path=${path},security_model=none"
     if [[ "$mode" == "ro" ]]; then
-      opt="${opt},readonly=on"
-    elif [[ "$mode" != "rw" ]]; then
+      opt="local,id=fs${i},path=${path},security_model=none,readonly=on"
+    elif [[ "$mode" == "rw" ]]; then
+      opt="local,id=fs${i},path=${path},security_model=none,writeout=immediate"
+      if python3 -c 'import os,sys
+p=sys.argv[1]
+n=b"user.zns-probe"
+os.setxattr(p, n, b"1")
+os.removexattr(p, n)
+' "$path" 2>/dev/null; then
+        opt="local,id=fs${i},path=${path},security_model=mapped-xattr,fmode=0644,dmode=0755,writeout=immediate"
+      fi
+    else
       echo "9p mode must be ro or rw: ${spec}" >&2
       exit 1
     fi
@@ -105,6 +121,9 @@ fi
 # zns-forward listens on the guest's external ports. Grafana on this host
 # scrapes mint at 127.0.0.1:${MINT_FWD}/metrics and Zebra at
 # 127.0.0.1:${ZEBRA_FWD}/metrics. These forwards are not part of the measurement.
+# fmode is masked by this process's umask. 022 leaves 0644 on the host, which
+# the account that owns the transport directory can read.
+umask 022
 exec qemu-system-x86_64 \
   -enable-kvm \
   -machine "${MACHINE},confidential-guest-support=sev0,vmport=off" \

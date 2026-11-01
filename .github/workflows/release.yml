@@ -7,6 +7,9 @@
 # It does not build: it downloads that tag's published, attested initrd and
 # measurement for the network and packs the document against those bytes,
 # then adds only zns-<network>-upgrade.bin and .toml to the release.
+# When from_measurement is that published measurement, the same files are
+# published as zns-<network>-backup.bin and .toml, and the upgrade document
+# already on the release is left in place.
 name: Release
 
 on:
@@ -337,8 +340,15 @@ jobs:
         run: |
           prefix="zns-${NETWORK}-"
           mkdir -p build/release
-          cp build/upgrade.bin "build/release/${prefix}upgrade.bin"
-          cp build/upgrade.toml "build/release/${prefix}upgrade.toml"
+          from="$(sed -n 's/^from_measurement = "\([0-9a-f]*\)"$/\1/p' build/upgrade.toml)"
+          published="$(tr -d '[:space:]' < build/snp-measurement.txt)"
+          if [[ -n "$from" && "$from" == "$published" ]]; then
+            cp build/upgrade.bin "build/release/${prefix}backup.bin"
+            cp build/upgrade.toml "build/release/${prefix}backup.toml"
+          else
+            cp build/upgrade.bin "build/release/${prefix}upgrade.bin"
+            cp build/upgrade.toml "build/release/${prefix}upgrade.toml"
+          fi
 
       - name: Attest upgrade files
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0

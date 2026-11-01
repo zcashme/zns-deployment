@@ -2,7 +2,7 @@
 # commit is what `cargo build --locked` compiles.
 
 mint_repo = "https://github.com/zcashme/zns-mint.git"
-mint_commit = "43169818c27a54be83ecd88573bff3548e5b4803"
+mint_commit = "e9883523ceaf8b662682d0ffe14714142b7d9b1b"
 
 keygen_repo = "https://github.com/zcashme/zns-keygen.git"
 keygen_commit = "09ada9ec4733ae980f4a8a0cc0f6b438dcc6c446"
@@ -14,8 +14,8 @@ canon_repo = "https://github.com/zcashme/zns-canon.git"
 canon_commit = "d127ec2f6f7b078e3c9f67f238e934c909e273fa"
 
 zebra_repo = "https://github.com/ZcashFoundation/zebra.git"
-zebra_commit = "6d1e414d6f55e4180d0e47baaa934bf97d5b4fec"
-zebra_version = "7.0.0-rc.0"
+zebra_commit = "e8db87eb69254e0d4eedd058eadd48bdfa09065a"
+zebra_version = "7.0.0"
 # DATABASE_FORMAT_VERSION in zebra-state. This build opens
 # state/v<zebra_db_format>/<network>.
 zebra_db_format = 29

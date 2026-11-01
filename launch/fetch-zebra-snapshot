@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Download a Zebra chain snapshot this guest can open.
 #
-#   sudo ./launch/fetch-zebra-snapshot
+#   sudo ZNS_NETWORK=testnet ./launch/fetch-zebra-snapshot
 #
-# Reads https://snapshots.zfnd.org/<network>/snapshots.json for the network
-# in $ZNS_HOPS/network and keeps the newest archive whose db_major is
-# zebra_db_format or zebra_db_format_previous in versions.toml. A newer
-# database format is not downloaded. The file is stored under
-# $ZNS_HOPS/snapshots/. A later run downloads again when that choice or its
+# Reads https://snapshots.zfnd.org/<network>/snapshots.json for ZNS_NETWORK
+# and keeps the newest archive whose db_major is zebra_db_format or
+# zebra_db_format_previous in versions.toml. A newer database format is not
+# downloaded. The file is stored under $ZNS_HOPS/<network>/snapshots/. A
+# later run downloads again when that choice or its
 # checksum changes. The archive can be deleted once a Zebra disk built
 # from it is syncing; the disk image is the working copy.
 set -euo pipefail
@@ -32,8 +32,8 @@ for cmd in curl python3 sha256sum; do
   fi
 done
 
-hops="$(hops_root)"
-network="$(hops_network "$hops")"
+hops="$(hops_root)" || exit 1
+network="$(hops_network "$hops")" || exit 1
 db_format="$(grep -E '^zebra_db_format[[:space:]]*=' "$ROOT/versions.toml" | head -n 1 || true)"
 db_format="${db_format#*=}"
 db_format="${db_format//\"/}"

@@ -1,0 +1,167 @@
+#!/usr/bin/env bash
+# Install the host tools that fetch a release and boot a guest.
+#
+#   sudo ./launch/prepare-host
+#
+# Installs QEMU, sshfs, tmux, gh, and the disk and snapshot tools. Writes
+# user_allow_other so a standby guest can use the SSH mounts. Downloads the
+# pinned kernel and OVMF into build/ and checks their hashes. Gives the
+# operator passwordless sudo, which the tmux session needs to start QEMU.
+#
+# The initrd comes from the release. This command does not install Rust or
+# build the image. Signing in to GitHub is separate. The machine must be
+# the pinned EPYC CPU and must already expose /dev/kvm and /dev/sev.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=guest-config.sh
+source "$HERE/guest-config.sh"
+
+if [[ "$(id -u)" -ne 0 ]]; then
+  echo "run as root" >&2
+  exit 1
+fi
+
+export DEBIAN_FRONTEND=noninteractive
+
+apt-get update
+apt-get install -y --no-install-recommends ca-certificates curl
+
+install -d -m 755 /etc/apt/keyrings
+curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+  -o /etc/apt/keyrings/githubcli-archive-keyring.gpg
+chmod 644 /etc/apt/keyrings/githubcli-archive-keyring.gpg
+arch="$(dpkg --print-architecture)"
+printf 'deb [arch=%s signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main\n' \
+  "$arch" > /etc/apt/sources.list.d/github-cli.list
+
+apt-get update
+apt-get install -y --no-install-recommends \
+  cpio \
+  e2fsprogs \
+  fuse3 \
+  gh \
+  git \
+  python3 \
+  qemu-system-x86 \
+  sshfs \
+  tmux \
+  zstd
+
+if ! gh attestation verify --help >/dev/null 2>&1; then
+  echo "gh cannot verify attestations" >&2
+  exit 1
+fi
+
+if [[ ! -f /etc/fuse.conf ]] || ! grep -qE '^[[:space:]]*user_allow_other' /etc/fuse.conf; then
+  printf '\nuser_allow_other\n' >> /etc/fuse.conf
+fi
+
+pin_quoted() {
+  local key="$1" line
+  line="$(grep -E "^${key}[[:space:]]*=[[:space:]]*\"" "$ROOT/versions.toml" | head -n 1 || true)"
+  line="${line#*=}"
+  line="${line#"${line%%[![:space:]]*}"}"
+  line="${line%\"}"
+  line="${line#\"}"
+  printf '%s' "$line"
+}
+
+archive="$(pin_quoted guest_archive)"
+kernel_deb="$(pin_quoted kernel_image_deb)"
+kernel_deb_sha="$(pin_quoted kernel_image_deb_sha256)"
+kernel_ver="$(pin_quoted kernel_version)"
+vmlinuz_sha="$(pin_quoted kernel_vmlinuz_sha256)"
+ovmf_deb="$(pin_quoted ovmf_deb)"
+ovmf_deb_sha="$(pin_quoted ovmf_deb_sha256)"
+ovmf_fd_sha="$(pin_quoted ovmf_fd_sha256)"
+for val in "$archive" "$kernel_deb" "$kernel_deb_sha" "$kernel_ver" "$vmlinuz_sha" \
+  "$ovmf_deb" "$ovmf_deb_sha" "$ovmf_fd_sha"; do
+  if [[ -z "$val" ]]; then
+    echo "versions.toml is missing a kernel or OVMF pin" >&2
+    exit 1
+  fi
+done
+
+sha256_file() {
+  sha256sum "$1" | awk '{ print $1 }'
+}
+
+fetch_deb() {
+  local url="$1" dest="$2" expected="$3" got
+  if [[ -f "$dest" ]] && [[ "$(sha256_file "$dest")" == "$expected" ]]; then
+    echo "keeping $dest"
+    return
+  fi
+  echo "downloading $url"
+  curl -fsSL -o "$dest.partial" "$url"
+  got="$(sha256_file "$dest.partial")"
+  if [[ "$got" != "$expected" ]]; then
+    echo "$dest sha256 ${got} != ${expected}" >&2
+    rm -f "$dest.partial"
+    exit 1
+  fi
+  mv "$dest.partial" "$dest"
+}
+
+debs="$ROOT/build/debs"
+mkdir -p "$debs" "$debs/kernel" "$debs/ovmf"
+fetch_deb "${archive}/${kernel_deb}" "$debs/kernel.deb" "$kernel_deb_sha"
+fetch_deb "${archive}/${ovmf_deb}" "$debs/ovmf.deb" "$ovmf_deb_sha"
+dpkg-deb -x "$debs/kernel.deb" "$debs/kernel"
+dpkg-deb -x "$debs/ovmf.deb" "$debs/ovmf"
+cp "$debs/kernel/boot/vmlinuz-${kernel_ver}" "$ROOT/build/vmlinuz"
+cp "$debs/ovmf/usr/share/ovmf/OVMF.amdsev.fd" "$ROOT/build/OVMF.amdsev.fd"
+if [[ "$(sha256_file "$ROOT/build/vmlinuz")" != "$vmlinuz_sha" ]]; then
+  echo "vmlinuz sha256 does not match versions.toml" >&2
+  exit 1
+fi
+if [[ "$(sha256_file "$ROOT/build/OVMF.amdsev.fd")" != "$ovmf_fd_sha" ]]; then
+  echo "OVMF sha256 does not match versions.toml" >&2
+  exit 1
+fi
+echo "kernel: $ROOT/build/vmlinuz"
+echo "OVMF: $ROOT/build/OVMF.amdsev.fd"
+
+if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+  sudoers="/etc/sudoers.d/zns-operator"
+  printf '%s ALL=(ALL) NOPASSWD: ALL\n' "$SUDO_USER" >"${sudoers}.partial"
+  chmod 440 "${sudoers}.partial"
+  visudo -cf "${sudoers}.partial"
+  mv "${sudoers}.partial" "$sudoers"
+  if ! sudo -u "$SUDO_USER" -- sudo -n true 2>/dev/null; then
+    echo "$SUDO_USER still cannot run sudo -n" >&2
+    exit 1
+  fi
+  echo "passwordless sudo: $SUDO_USER"
+fi
+
+cpu_field() {
+  local key="$1" line val
+  line="$(grep -m1 -E "^${key}[[:space:]]*:" /proc/cpuinfo || true)"
+  val="${line#*:}"
+  val="${val#"${val%%[![:space:]]*}"}"
+  val="${val%"${val##*[![:space:]]}"}"
+  printf '%s' "$val"
+}
+family="$(cpu_field 'cpu family')"
+model="$(cpu_field model)"
+stepping="$(cpu_field stepping)"
+if [[ "$family" != "$CPU_FAMILY" || "$model" != "$CPU_MODEL" || "$stepping" != "$CPU_STEPPING" ]]; then
+  echo "CPU signature ${family:-?}/${model:-?}/${stepping:-?} != ${CPU_FAMILY}/${CPU_MODEL}/${CPU_STEPPING}" >&2
+  exit 1
+fi
+if [[ ! -c /dev/kvm || ! -c /dev/sev ]]; then
+  echo "this host needs /dev/kvm and /dev/sev" >&2
+  exit 1
+fi
+echo "CPU ${family}/${model}/${stepping}, /dev/kvm, /dev/sev"
+
+if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+  if ! sudo -u "$SUDO_USER" -- gh auth status >/dev/null 2>&1; then
+    echo "GitHub sign-in for $SUDO_USER is still required before fetch-release"
+  fi
+elif ! gh auth status >/dev/null 2>&1; then
+  echo "GitHub sign-in is still required before fetch-release"
+fi
+echo "host tools are installed"
