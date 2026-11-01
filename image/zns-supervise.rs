@@ -5,10 +5,12 @@
 //! Zebra alone during its first sync. Start mint only while Zebra's /ready
 //! check is succeeding and the ceremony is complete. A migrate-source.hold
 //! file keeps mint stopped. The source guest writes it before unsealing. A
-//! move to another release leaves it. A same-release backup removes it
-//! after the receipt is accepted. /run/backup-stopping keeps mint stopped
-//! as well. The backup guest writes that file before removing the hold and
-//! powering off. The file is on tmpfs, so the next boot does not have it.
+//! move to another release removes it after the seed is passed, then writes
+//! it again when the target mint has synced and is waiting. A same-release
+//! backup removes it after the receipt is accepted. /run/backup-stopping
+//! keeps mint stopped as well. The backup guest writes that file before
+//! removing the hold and powering off. The file is on tmpfs, so the next
+//! boot does not have it.
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};

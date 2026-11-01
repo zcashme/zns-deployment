@@ -429,7 +429,61 @@ already_done() {
   [ "$done_line" = "$line" ]
 }
 
+# The target mint syncs Zebra and its wallet while this mint is running.
+# target.synced means that wallet is at the tip and the target is waiting.
+# This mint stops, then source.paused lets the target enter its run loop.
+advance_cutover() {
+  strn="$1"
+  if [ -f "$strn/source.paused" ]; then
+    return 0
+  fi
+  if [ ! -f "$strn/target.synced" ]; then
+    return 0
+  fi
+  if [ ! -f "$STATE_DIR/migrate-source.hold" ]; then
+    printf 'hold\n' >"$STATE_DIR/migrate-source.hold" || return 1
+    log "target wallet is at the tip; stopping this mint"
+    return 0
+  fi
+  if pidof zns-mint >/dev/null 2>&1; then
+    return 0
+  fi
+  printf 'paused\n' >"$strn/source.paused.new" || return 1
+  mv "$strn/source.paused.new" "$strn/source.paused" || return 1
+  log "previous mint is stopped; the target mint can run"
+  return 0
+}
+
+# Copy the source cutover signal onto the state disk, where mint reads it.
+# Publish target.synced once mint has finished syncing, and release mint
+# once the source mint has stopped.
+publish_cutover() {
+  if [ -f /migration/source.cutover ] && [ ! -f "$STATE_DIR/migrate-target.cutover" ]; then
+    cp /migration/source.cutover "$STATE_DIR/migrate-target.cutover" || return 1
+  fi
+  if [ -f "$STATE_DIR/migrate-target.release" ]; then
+    return 0
+  fi
+  if [ -f "$STATE_DIR/migrate-target.synced" ] && [ ! -f /migration/target.synced ]; then
+    printf 'synced\n' >/migration/target.synced.new || return 1
+    mv /migration/target.synced.new /migration/target.synced || return 1
+    log "wallet is at the tip; waiting for the previous mint to stop"
+  fi
+  if [ -f /migration/source.paused ]; then
+    printf 'release\n' >"$STATE_DIR/migrate-target.release.new" || return 1
+    mv "$STATE_DIR/migrate-target.release.new" "$STATE_DIR/migrate-target.release" || return 1
+    log "previous mint is stopped; this mint is running"
+  fi
+  return 0
+}
+
 watch_target() {
+  if [ -f "$STATE_DIR/migrate-target.done" ]; then
+    if [ ! -f /run/zns-upgrade/upgrade.toml ] || ! same_release /run/zns-upgrade/upgrade.toml; then
+      publish_cutover || return
+    fi
+    return 0
+  fi
   if [ "$target_wait" -eq 1 ]; then
     if channel_has /migration offer.bin attestation.bin encrypted_seed.bin \
       source_attestation.bin receipt.bin receipt_attestation.bin \
@@ -461,6 +515,9 @@ watch_target() {
   if same_release /run/zns-upgrade/upgrade.toml; then
     printf 'backup\n' >/run/backup-target || return
     printf 'hold\n' >"$STATE_DIR/migrate-source.hold" || return
+  else
+    rm -f /migration/source.cutover /migration/target.synced /migration/source.paused
+    printf 'wait\n' >"$STATE_DIR/migrate-target.wait" || return
   fi
   log "running zns-migrate target"
   /usr/local/bin/zns-migrate target \
@@ -486,7 +543,11 @@ watch_target() {
     return
   fi
   if [ "$status" -eq 0 ]; then
+    publish_cutover || return
     return
+  fi
+  if [ ! -f "$STATE_DIR/keys/zns_seed.capsule" ]; then
+    rm -f "$STATE_DIR/migrate-target.wait"
   fi
   log "migration target failed ($status); waiting for an empty transport directory"
   target_wait=1
@@ -521,7 +582,11 @@ watch_source() {
   identity="$(document_line /run/zns-upgrade)"
   [ -n "$identity" ] || return
   if already_done "$identity"; then
-    clear_recorded_backup_hold || return
+    if same_release /run/zns-upgrade/upgrade.toml; then
+      clear_recorded_backup_hold || return
+    else
+      advance_cutover "$strn" || return
+    fi
     return
   fi
   if channel_has "$strn" source.ready offer.bin attestation.bin encrypted_seed.bin \
@@ -531,6 +596,7 @@ watch_source() {
     source_wait=1
     return
   fi
+  rm -f "$strn/source.cutover" "$strn/target.synced" "$strn/source.paused"
   printf 'hold\n' >"$STATE_DIR/migrate-source.hold" || return
   # The supervisor checks the hold file every 30s. Wait out one pass so mint
   # is stopped before the capsule is read.
@@ -551,8 +617,15 @@ watch_source() {
   if [ "$status" -eq 0 ]; then
     printf '%s\n' "$identity" >"$STATE_DIR/migrate-source.done.new" || return
     mv "$STATE_DIR/migrate-source.done.new" "$STATE_DIR/migrate-source.done" || return
-    clear_recorded_backup_hold || return
-    log "migration source finished"
+    if same_release /run/zns-upgrade/upgrade.toml; then
+      clear_recorded_backup_hold || return
+      log "migration source finished"
+      return
+    fi
+    printf 'cutover\n' >"$strn/source.cutover.new" || return
+    mv "$strn/source.cutover.new" "$strn/source.cutover" || return
+    rm -f "$STATE_DIR/migrate-source.hold" || return
+    log "seed is on the target; this mint runs while that guest syncs"
     return
   fi
   rm -f "$STATE_DIR/migrate-source.hold" || true
