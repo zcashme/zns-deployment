@@ -289,8 +289,6 @@ stand() {
   name="$(guest_qemu_name backup)" || exit 1
   session="$(guest_session backup)" || exit 1
   console="$hops/logs/backup-${tag}.console"
-  ports="$(network_ports backup)" || exit 1
-  read -r mint_fwd zebra_fwd <<<"$ports"
 
   running="$(pgrep -af qemu-system-x86_64 | grep -F -- "-name ${name} -nographic" || true)"
   if [[ -n "$running" ]]; then
@@ -313,6 +311,9 @@ stand() {
       exit 1
     fi
   done
+
+  ports="$(network_ports backup)" || exit 1
+  read -r mint_fwd zebra_fwd <<<"$ports"
 
   if [[ -L "$zns_img" || ( -e "$zns_img" && ! -f "$zns_img" ) ]]; then
     echo "$zns_img must be a regular file" >&2
@@ -425,6 +426,7 @@ stand() {
     exit 1
   fi
   echo "$name is running in tmux session ${session}"
+  write_host_ports "$hops" "backup-${tag}" "$mint_fwd" "$zebra_fwd"
   echo "attach with: tmux attach -t ${session}"
   net="$(require_network)" || exit 1
   echo "on the live host, with this guest already up: sudo ZNS_NETWORK=${net} ./launch/backup publish"

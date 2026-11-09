@@ -111,8 +111,6 @@ else
   "$HERE/install-zebra-snapshot" "$to"
 fi
 
-ports="$(network_ports target)" || exit 1
-read -r mint_fwd zebra_fwd <<<"$ports"
 name="$(guest_qemu_name "$to")" || exit 1
 console="$hops/logs/${to}.console"
 pidfile="$hops/logs/${to}.pid"
@@ -137,6 +135,12 @@ fi
 if [[ -n "$pid" ]]; then
   echo "target qemu already running (pid $pid)"
   printf '%s\n' "$pid" >"$pidfile"
+  line="$(pgrep -af qemu-system-x86_64 | grep -F -- "-name ${name} -nographic" | head -n 1 || true)"
+  read -r mint_fwd zebra_fwd < <(parse_forward_ports "$line")
+  if [[ -n "$mint_fwd" && -n "$zebra_fwd" ]]; then
+    echo "host ports: mint ${mint_fwd} zebra ${zebra_fwd} (already running)"
+    write_host_ports "$hops" "$to" "$mint_fwd" "$zebra_fwd"
+  fi
   exit 0
 fi
 
@@ -144,6 +148,9 @@ if operator_tmux has-session -t "$target_session" 2>/dev/null; then
   echo "tmux session ${target_session} already exists and the target qemu is not running" >&2
   exit 1
 fi
+
+ports="$(network_ports target)" || exit 1
+read -r mint_fwd zebra_fwd <<<"$ports"
 
 runner="$hops/logs/${to}.launch"
 {
@@ -181,6 +188,7 @@ if [[ -z "$pid" ]] || ! kill -0 "$pid" 2>/dev/null; then
   exit 1
 fi
 printf '%s\n' "$pid" >"$pidfile"
+write_host_ports "$hops" "$to" "$mint_fwd" "$zebra_fwd"
 if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
   chown "$SUDO_USER" "$pidfile" || true
 fi

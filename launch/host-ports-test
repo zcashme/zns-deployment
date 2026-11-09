@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# The service-pair choice, without QEMU.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=hops.sh
+source "$HERE/hops.sh"
+
+fail=0
+check() {
+  local net="$1" role="$2" held_m="$3" held_z="$4" busy="$5" want="$6" label="$7"
+  local got err
+  ZNS_NETWORK="$net"
+  unset ZNS_MINT_FWD ZNS_ZEBRA_FWD
+  if ! got="$(choose_ports "$role" "$held_m" "$held_z" "$busy" 2>/dev/null)"; then
+    got="fail"
+  fi
+  if [[ "$got" != "$want" ]]; then
+    echo "fail: ${label}: got ${got}, want ${want}" >&2
+    fail=1
+  fi
+}
+
+check_fail() {
+  local net="$1" role="$2" held_m="$3" held_z="$4" busy="$5" label="$6"
+  ZNS_NETWORK="$net"
+  unset ZNS_MINT_FWD ZNS_ZEBRA_FWD
+  if choose_ports "$role" "$held_m" "$held_z" "$busy" >/dev/null 2>&1; then
+    echo "fail: ${label}: expected a refusal" >&2
+    fail=1
+  fi
+}
+
+check testnet genesis "" "" "" "10465 10999" "testnet genesis takes the low pair"
+check testnet target "10465" "10999" "10465 10999" "20465 20999" "testnet moves to the high pair"
+check testnet target "20465" "20999" "20465 20999" "10465 10999" "testnet moves back to the low pair"
+check testnet target "19465" "19999" "19465 19999" "10465 10999" "a foreign pair stays off testnet"
+check mainnet target "19465" "19999" "19465 19999" "9465 9999" "mainnet moves back to the low pair"
+check mainnet target "9465" "9999" "9465 9999" "19465 19999" "mainnet moves to the high pair"
+check mainnet genesis "" "" "9465 9999" "19465 19999" "genesis uses the high pair when the low pair is taken"
+check testnet backup "" "" "" "30465 30999" "testnet backup keeps its pair"
+check mainnet backup "" "" "" "29465 29999" "mainnet backup keeps its pair"
+check_fail testnet target "10465" "10999" "10465 10999 20465 20999" "both testnet pairs taken"
+check_fail mainnet backup "" "" "29465 29999" "mainnet backup pair taken"
+
+ZNS_NETWORK=testnet
+ZNS_MINT_FWD=21065
+ZNS_ZEBRA_FWD=21999
+got="$(choose_ports target "" "" "" 2>/dev/null)"
+if [[ "$got" != "21065 21999" ]]; then
+  echo "fail: environment pair: got ${got}" >&2
+  fail=1
+fi
+if choose_ports target "" "" "21065" >/dev/null 2>&1; then
+  echo "fail: environment pair already forwarded" >&2
+  fail=1
+fi
+unset ZNS_ZEBRA_FWD
+if choose_ports target "" "" "" >/dev/null 2>&1; then
+  echo "fail: one environment port" >&2
+  fail=1
+fi
+unset ZNS_MINT_FWD
+
+line="qemu-system-x86_64 -netdev user,id=net0,hostfwd=tcp:127.0.0.1:20465-:9465,hostfwd=tcp:127.0.0.1:20999-:9998 -name zns-testnet-v2.1.0 -nographic"
+got="$(parse_forward_ports "$line")"
+if [[ "$got" != "20465 20999" ]]; then
+  echo "fail: parse forwards: got ${got}" >&2
+  fail=1
+fi
+
+if [[ "$fail" -ne 0 ]]; then
+  exit 1
+fi
+echo "host port pairs ok"
