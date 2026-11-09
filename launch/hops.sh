@@ -124,31 +124,183 @@ guest_qemu_name() {
   printf 'zns-%s-%s\n' "$net" "$1"
 }
 
-# Host ports. The guest still listens on 9465 and 9998.
-# mainnet uses 9465/9999, 19465/19999, and 29465/29999.
-# testnet uses 10465/10999, 20465/20999, and 30465/30999.
-network_ports() {
-  local role="$1" net mint zebra
+# Host forwards. The guest listens on 9465 (mint) and 9998 (zebra).
+# Mainnet's service pairs are 9465/9999 and 19465/19999. Its backup pair
+# is 29465/29999. Testnet's service pairs are 10465/10999 and 20465/20999.
+# Its backup pair is 30465/30999. A guest keeps the forwards it was started
+# with when its tmux session is renamed. The next service guest on that
+# network takes the other service pair. Backup stays on the backup pair.
+# ZNS_MINT_FWD and ZNS_ZEBRA_FWD together replace the choice.
+
+# True when $2 appears as its own word in $1.
+port_listed() {
+  [[ " $1 " == *" $2 "* ]]
+}
+
+# Mint and zebra host ports from one QEMU command line.
+# A forward looks like hostfwd=tcp:127.0.0.1:<host>-:<guest>.
+# The guest side is 9465 for mint and 9998 for zebra.
+parse_forward_ports() {
+  local rest="$1" chunk host guest mint="" zebra=""
+  while [[ "$rest" == *hostfwd=* ]]; do
+    rest="${rest#*hostfwd=}"
+    chunk="${rest%%,*}"
+    chunk="${chunk%% *}"
+    guest="${chunk##*:}"
+    host="${chunk%:*}"
+    host="${host##*:}"
+    host="${host%-}"
+    if [[ "$guest" == "9465" ]]; then
+      mint="$host"
+    elif [[ "$guest" == "9998" ]]; then
+      zebra="$host"
+    fi
+  done
+  printf '%s %s\n' "$mint" "$zebra"
+}
+
+# Every host port a running QEMU forwards, space separated.
+qemu_forwarded_ports() {
+  local line ports="" mint zebra
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    read -r mint zebra < <(parse_forward_ports "$line")
+    if [[ -n "$mint" ]]; then
+      ports+=" $mint"
+    fi
+    if [[ -n "$zebra" ]]; then
+      ports+=" $zebra"
+    fi
+  done < <(pgrep -af qemu-system-x86_64 || true)
+  printf '%s\n' "${ports# }"
+}
+
+# The service or backup pair for this launch.
+# $1 is genesis, target, or backup.
+# $2 and $3 are the live guest's mint and zebra host ports, or empty.
+# $4 is the space-separated list of host ports already forwarded.
+# The chosen pair is printed on stdout. The reason goes to stderr.
+choose_ports() {
+  local role="$1" held_m="${2:-}" held_z="${3:-}" busy="${4:-}" net
+  local low_m low_z high_m high_z bak_m bak_z
+  local want_m want_z alt_m="" alt_z="" why
   net="$(require_network)" || return 1
-  case "${net}:${role}" in
-    mainnet:genesis) mint=9465; zebra=9999 ;;
-    mainnet:target) mint=19465; zebra=19999 ;;
-    mainnet:backup) mint=29465; zebra=29999 ;;
-    testnet:genesis) mint=10465; zebra=10999 ;;
-    testnet:target) mint=20465; zebra=20999 ;;
-    testnet:backup) mint=30465; zebra=30999 ;;
+  case "$net" in
+    mainnet)
+      low_m=9465; low_z=9999
+      high_m=19465; high_z=19999
+      bak_m=29465; bak_z=29999
+      ;;
+    testnet)
+      low_m=10465; low_z=10999
+      high_m=20465; high_z=20999
+      bak_m=30465; bak_z=30999
+      ;;
     *)
-      echo "no host ports for ${net} ${role}" >&2
+      echo "no host ports for ${net}" >&2
       return 1
       ;;
   esac
-  if [[ -n "${ZNS_MINT_FWD:-}" ]]; then
-    mint="$ZNS_MINT_FWD"
+  if [[ -n "${ZNS_MINT_FWD:-}" || -n "${ZNS_ZEBRA_FWD:-}" ]]; then
+    if [[ -z "${ZNS_MINT_FWD:-}" || -z "${ZNS_ZEBRA_FWD:-}" ]]; then
+      echo "set ZNS_MINT_FWD and ZNS_ZEBRA_FWD together" >&2
+      return 1
+    fi
+    if port_listed "$busy" "$ZNS_MINT_FWD" || port_listed "$busy" "$ZNS_ZEBRA_FWD"; then
+      echo "host ports ${ZNS_MINT_FWD}/${ZNS_ZEBRA_FWD} are already forwarded" >&2
+      return 1
+    fi
+    echo "host ports: mint ${ZNS_MINT_FWD} zebra ${ZNS_ZEBRA_FWD} (${net}, from the environment)" >&2
+    printf '%s %s\n' "$ZNS_MINT_FWD" "$ZNS_ZEBRA_FWD"
+    return 0
   fi
-  if [[ -n "${ZNS_ZEBRA_FWD:-}" ]]; then
-    zebra="$ZNS_ZEBRA_FWD"
+  if [[ "$role" == "backup" ]]; then
+    want_m=$bak_m
+    want_z=$bak_z
+    why="${net} backup pair"
+  elif [[ "$role" == "genesis" ]]; then
+    want_m=$low_m
+    want_z=$low_z
+    alt_m=$high_m
+    alt_z=$high_z
+    why="${net} low pair"
+  elif [[ -z "$held_m" && -z "$held_z" ]]; then
+    want_m=$low_m
+    want_z=$low_z
+    alt_m=$high_m
+    alt_z=$high_z
+    why="${net} low pair; no live guest ports"
+  elif [[ "$held_m" == "$low_m" && "$held_z" == "$low_z" ]]; then
+    want_m=$high_m
+    want_z=$high_z
+    alt_m=$low_m
+    alt_z=$low_z
+    why="${net} high pair; live guest holds ${held_m}/${held_z}"
+  elif [[ "$held_m" == "$high_m" && "$held_z" == "$high_z" ]]; then
+    want_m=$low_m
+    want_z=$low_z
+    alt_m=$high_m
+    alt_z=$high_z
+    why="${net} low pair; live guest holds ${held_m}/${held_z}"
+  else
+    want_m=$low_m
+    want_z=$low_z
+    alt_m=$high_m
+    alt_z=$high_z
+    why="${net} low pair; live guest holds ${held_m}/${held_z}, outside this network"
   fi
-  printf '%s %s\n' "$mint" "$zebra"
+  if port_listed "$busy" "$want_m" || port_listed "$busy" "$want_z"; then
+    if [[ -z "$alt_m" ]] || port_listed "$busy" "$alt_m" || port_listed "$busy" "$alt_z"; then
+      echo "host ports ${want_m}/${want_z} are already forwarded" >&2
+      return 1
+    fi
+    echo "host ports: mint ${alt_m} zebra ${alt_z} (${net}; ${want_m}/${want_z} already forwarded)" >&2
+    printf '%s %s\n' "$alt_m" "$alt_z"
+    return 0
+  fi
+  echo "host ports: mint ${want_m} zebra ${want_z} (${why})" >&2
+  printf '%s %s\n' "$want_m" "$want_z"
+}
+
+# Host ports for this launch. genesis and target alternate this network's
+# two service pairs. backup uses the backup pair.
+network_ports() {
+  local role="$1" busy held_m="" held_z="" hops from name line
+  case "$role" in
+    genesis|target|backup) ;;
+    *)
+      echo "no host ports for role ${role}" >&2
+      return 1
+      ;;
+  esac
+  busy="$(qemu_forwarded_ports)"
+  if [[ "$role" == "target" ]]; then
+    hops="$(hops_root)" || return 1
+    if [[ -f "$hops/current" ]]; then
+      from="$(read_current "$hops")"
+      name="$(guest_qemu_name "$from")" || return 1
+      line="$(pgrep -af qemu-system-x86_64 | grep -F -- "-name ${name} -nographic" | head -n 1 || true)"
+      if [[ -n "$line" ]]; then
+        read -r held_m held_z < <(parse_forward_ports "$line")
+        if [[ -z "$held_m" || -z "$held_z" ]]; then
+          echo "could not read host ports for ${name}" >&2
+          return 1
+        fi
+      fi
+    fi
+  fi
+  choose_ports "$role" "$held_m" "$held_z" "$busy"
+}
+
+# Record the host ports this tag was started with.
+write_host_ports() {
+  local hops="$1" tag="$2" mint="$3" zebra="$4" path
+  mkdir -p "$hops/logs"
+  path="$hops/logs/${tag}.ports"
+  printf '%s %s\n' "$mint" "$zebra" >"$path"
+  if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+    chown "$SUDO_USER" "$path" || true
+  fi
 }
 
 require_root() {

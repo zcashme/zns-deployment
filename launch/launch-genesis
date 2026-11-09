@@ -89,8 +89,6 @@ fi
 
 name="$(guest_qemu_name "$version")" || exit 1
 session="$(guest_session source)" || exit 1
-ports="$(network_ports genesis)" || exit 1
-read -r mint_fwd zebra_fwd <<<"$ports"
 if pgrep -af qemu-system-x86_64 | grep -F -- "-name ${name} -nographic" >/dev/null; then
   echo "$name is already running" >&2
   exit 1
@@ -100,6 +98,9 @@ if operator_tmux has-session -t "$session" 2>/dev/null; then
   echo "close that session, then run launch-genesis again" >&2
   exit 1
 fi
+
+ports="$(network_ports genesis)" || exit 1
+read -r mint_fwd zebra_fwd <<<"$ports"
 
 # The session belongs to the operator and starts QEMU with sudo -n. Without
 # passwordless sudo it would die before its output could be logged.
@@ -166,5 +167,6 @@ if ! pgrep -af qemu-system-x86_64 | grep -F -- "-name ${name} -nographic" >/dev/
   exit 1
 fi
 echo "$name is running in tmux session ${session}"
+write_host_ports "$hops" "$version" "$mint_fwd" "$zebra_fwd"
 echo "metrics: 127.0.0.1:${mint_fwd}/metrics and 127.0.0.1:${zebra_fwd}/metrics"
 echo "attach with: tmux attach -t ${session}"

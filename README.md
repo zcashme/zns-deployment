@@ -51,7 +51,7 @@ Every launch command takes `ZNS_NETWORK=mainnet` or `ZNS_NETWORK=testnet`. That 
 
 `Ctrl-a c` switches to the QEMU monitor. `quit` stops the VM, and `Ctrl-a c` returns to the guest. `Ctrl-a x` stops it directly. This is the host powering the VM off. The guest policy keeps that monitor from reading guest memory.
 
-Mainnet metrics are `127.0.0.1:9999/metrics` and `127.0.0.1:9465/metrics` after the ceremony completes. Testnet uses `10999` and `10465`. A target guest starts in tmux session `zns-<network>-target`. Mainnet uses `19465` and `19999`. Testnet uses `20465` and `20999`. Its console is also written to a log file.
+Each network has two pairs of host ports. The guest itself listens on 9465 and 9998. Mainnet's pairs are mint `9465` with Zebra `9999`, and mint `19465` with Zebra `19999`. Testnet's pairs are mint `10465` with Zebra `10999`, and mint `20465` with Zebra `20999`. `launch-genesis` takes the low pair. Each migrate takes the other pair of that same network: the live guest keeps the forwards it was started with when its tmux session is renamed, so the next guest has to use the pair that is free. The launch command prints the pair, and writes it to `logs/<tag>.ports` in that network's directory. A backup guest stays on its own pair, mainnet `29465` and `29999`, testnet `30465` and `30999`. Set `ZNS_MINT_FWD` and `ZNS_ZEBRA_FWD` together to choose a pair by hand. A target guest starts in tmux session `zns-<network>-target`. Its console is also written to a log file.
 
 ## Moving a guest
 
@@ -100,7 +100,7 @@ Pressing Ctrl-C while that command is still waiting stops only the wait. The new
 
 Leave both guests running until the old console logs `this mint is stopped for good`. Until then the new guest's mint is paused, and quitting the old guest leaves no mint running. Do not restart the new guest before that line either: a restart without this hop's transport directory skips the pause, and both mints would serve. Then attach to the old one with `tmux attach -t zns-<network>-previous`, then `Ctrl-a c`, then `quit`, when you are ready to stop it. Detach with `Ctrl-b d`. The next move is another `migrate` from a second terminal. Do not restart the live guest for that.
 
-Attach to the live guest with `tmux attach -t zns-<network>-source`. Its console is also `/home/ubuntu/zns-hops/<network>/logs/v0.1.x.console`. Mainnet metrics are `127.0.0.1:19465/metrics` and `127.0.0.1:19999/metrics`. Testnet metrics are `127.0.0.1:20465/metrics` and `127.0.0.1:20999/metrics`.
+Attach to the live guest with `tmux attach -t zns-<network>-source`. Its console is also `/home/ubuntu/zns-hops/<network>/logs/v0.1.x.console`. The host ports are the ones that launch printed, and the same numbers are in `logs/<tag>.ports`. The next migrate uses the other pair for that network.
 
 A copy of this same release onto another machine is the backup below. `current` stays on this release.
 
@@ -136,7 +136,7 @@ sudo ZNS_NETWORK=testnet ./launch/ssh-key-live '<the ssh-ed25519 line>'
 
 SSH from the standby account to the live host then succeeds. The first connection confirms the live host key. `stand` uses that same account.
 
-3. On the live host, read the mint metrics. A guest started with `launch-genesis` serves them at `127.0.0.1:9465/metrics`. A guest `migrate` promoted serves them at `127.0.0.1:19465/metrics`.
+3. On the live host, read the mint metrics at the host port in `logs/<tag>.ports`. Mainnet is `9465` or `19465`. Testnet is `10465` or `20465`.
 
    `zns_mint_guest_info` carries `measurement` and `guest_policy`. `zns_mint_ceremony_info` carries `seed_fingerprint` and `capsule_hash`.
 
@@ -157,6 +157,8 @@ sudo ZNS_NETWORK=testnet ./launch/backup publish
 ```
 
 7. On the standby console, wait until it logs `migration target finished` and the guest stops. The capsule is on `backup-zns-state.img`, sealed to that machine. On the live console, mint stops for the handoff, then the log says `same-release backup accepted; mint hold cleared` and mint starts again.
+
+A later release uses this same backup pair. Stop the previous backup guest before `stand` for the new tag, so those ports are free. The next `stand` takes them.
 
 To run this copy, stop the live guest and leave that session closed. On the backup machine, start this same release with those two disks:
 
