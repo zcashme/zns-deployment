@@ -192,9 +192,6 @@ jobs:
           manifest = {
               "network": network,
               "mint_commit": pins.get("mint_commit", ""),
-              "keygen_commit": pins.get("keygen_commit", ""),
-              "migrate_commit": pins.get("migrate_commit", ""),
-              "canon_commit": pins.get("canon_commit", ""),
               "zebra_commit": pins.get("zebra_commit", ""),
               "zebra_version": pins.get("zebra_version", ""),
               "kernel_version": pins.get("kernel_version", ""),
