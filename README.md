@@ -2,7 +2,7 @@
 
 Reproducible build of the ZNS SEV-SNP guest: the kernel, initramfs, and launch parameters whose bytes the TEE measures.
 
-`zns-mint`, `zns-keygen`, `zns-canon`, and `zns-migrate` live in their own repos. `versions.toml` pins the commits this image builds and the Rust toolchain that compiles them. Chain data, the seed capsule, and logs stay on the host.
+`zns-mint`, `zns-keygen`, `zns-canon`, and `zns-migrate` are one workspace in [zns-mint](https://github.com/zcashme/zns-mint). `versions.toml` pins the zns-mint and Zebra commits this image builds and the Rust toolchain that compiles them. Chain data, the seed capsule, and logs stay on the host.
 
 ## What the TEE measures
 
@@ -15,7 +15,7 @@ Memory size, the state disks, host port forwards, and 9p mounts are launch setti
 | Path | Role |
 | --- | --- |
 | `versions.toml` | Networks, commits, toolchain, kernel, OVMF |
-| `image/build-image.sh` | Fetch pins, build one network's binaries, write `build/zns-initrd.img` |
+| `image/build-image.sh` | Fetch zns-mint and Zebra, build one network's binaries, write `build/zns-initrd.img` |
 | `image/guest-debs.sha256` | BusyBox, kmod, and the shared libraries |
 | `image/configs/zebrad.toml` | Zebra config baked into the initrd; the build fills in the network and ports |
 | `image/initramfs/scripts/init-premount/zns` | PID 1 |
