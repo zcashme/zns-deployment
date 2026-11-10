@@ -192,9 +192,6 @@ jobs:
           manifest = {
               "network": network,
               "mint_commit": pins.get("mint_commit", ""),
-              "keygen_commit": pins.get("keygen_commit", ""),
-              "migrate_commit": pins.get("migrate_commit", ""),
-              "canon_commit": pins.get("canon_commit", ""),
               "zebra_commit": pins.get("zebra_commit", ""),
               "zebra_version": pins.get("zebra_version", ""),
               "kernel_version": pins.get("kernel_version", ""),
@@ -294,19 +291,19 @@ jobs:
           cp "published/${prefix}initrd.img" build/zns-initrd.img
           cp "published/${prefix}snp-measurement.txt" build/snp-measurement.txt
 
-      # pack-upgrade builds against build/src/zns-canon, which build-image.sh
-      # checks out in a build. This job does not build, so it checks out the
-      # same canon_commit itself.
-      - name: Check out zns-canon
+      # pack-upgrade builds against build/src/zns-mint/canon, which
+      # build-image.sh checks out in a build. This job does not build, so it
+      # checks out the same mint_commit itself.
+      - name: Check out zns-mint
         run: |
-          canon_repo="$(sed -n 's/^canon_repo = "\(.*\)"/\1/p' versions.toml)"
-          canon_commit="$(sed -n 's/^canon_commit = "\(.*\)"/\1/p' versions.toml)"
-          test -n "$canon_repo"
-          test -n "$canon_commit"
-          git init -q build/src/zns-canon
-          git -C build/src/zns-canon fetch -q --depth 1 "$canon_repo" "$canon_commit"
-          git -C build/src/zns-canon checkout -q --detach FETCH_HEAD
-          test "$(git -C build/src/zns-canon rev-parse HEAD)" = "$canon_commit"
+          mint_repo="$(sed -n 's/^mint_repo = "\(.*\)"/\1/p' versions.toml)"
+          mint_commit="$(sed -n 's/^mint_commit = "\(.*\)"/\1/p' versions.toml)"
+          test -n "$mint_repo"
+          test -n "$mint_commit"
+          git init -q build/src/zns-mint
+          git -C build/src/zns-mint fetch -q --depth 1 "$mint_repo" "$mint_commit"
+          git -C build/src/zns-mint checkout -q --detach FETCH_HEAD
+          test "$(git -C build/src/zns-mint rev-parse HEAD)" = "$mint_commit"
 
       - name: Install build packages
         run: |

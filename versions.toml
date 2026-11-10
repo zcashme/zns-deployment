@@ -1,17 +1,9 @@
-# Pinned inputs for the measured guest. Cargo.lock inside each pinned
-# commit is what `cargo build --locked` compiles.
+# Pinned inputs for the measured guest. zns-mint, zns-keygen, zns-migrate,
+# and zns-canon are one workspace in mint_repo. Its Cargo.lock at
+# mint_commit is what `cargo build --locked` compiles.
 
 mint_repo = "https://github.com/zcashme/zns-mint.git"
-mint_commit = "9dce10ab320240a22a1333808000e06699414613"
-
-keygen_repo = "https://github.com/zcashme/zns-keygen.git"
-keygen_commit = "09ada9ec4733ae980f4a8a0cc0f6b438dcc6c446"
-
-migrate_repo = "https://github.com/zcashme/zns-migrate.git"
-migrate_commit = "c41f505d3763d89f67976dbe1e834aa7c8324faf"
-
-canon_repo = "https://github.com/zcashme/zns-canon.git"
-canon_commit = "d127ec2f6f7b078e3c9f67f238e934c909e273fa"
+mint_commit = "051cfd76a327e8233208e253230dff3b13170769"
 
 zebra_repo = "https://github.com/ZcashFoundation/zebra.git"
 zebra_commit = "e8db87eb69254e0d4eedd058eadd48bdfa09065a"

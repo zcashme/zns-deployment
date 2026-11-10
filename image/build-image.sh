@@ -4,8 +4,9 @@
 #   ./image/build-image.sh mainnet
 #   ./image/build-image.sh testnet
 #
-# Fetches the pinned repos, builds zns-mint, zns-keygen, zns-migrate, and
-# zebrad, checks the Sapling parameters, and packs build/zns-initrd.img.
+# Fetches the pinned zns-mint workspace and Zebra, builds zns-mint,
+# zns-keygen, zns-migrate, and zebrad, checks the Sapling parameters, and
+# packs build/zns-initrd.img.
 # The network is one of versions.toml networks. It selects the zns-mint and
 # zns-keygen features and the Zebra network and ports, so each network is
 # its own image and its own measurement.
@@ -75,23 +76,6 @@ fetch_repo() {
   current="$(git -C "$dest" rev-parse HEAD)"
   if [[ "$current" != "$commit" ]]; then
     echo "${name} is at ${current}, versions.toml pins ${commit}" >&2
-    exit 1
-  fi
-}
-
-lock_canon() {
-  sed -n 's/.*zns-canon\.git?branch=main#\([0-9a-f][0-9a-f]*\).*/\1/p' "$1" | head -n 1
-}
-
-warn_canon_lock() {
-  local name="$1" lock="$2" found
-  if [[ ! -f "$lock" ]]; then
-    echo "${name} has no Cargo.lock, so its zns-canon commit is not pinned" >&2
-    exit 1
-  fi
-  found="$(lock_canon "$lock")"
-  if [[ "$found" != "$CANON_COMMIT" ]]; then
-    echo "${name} Cargo.lock builds zns-canon ${found:-unknown}; versions.toml canon_commit is ${CANON_COMMIT}" >&2
     exit 1
   fi
 }
@@ -340,15 +324,12 @@ if errors:
     raise SystemExit("build/zebrad.toml\n" + "\n".join(errors))
 PY
 
-CANON_COMMIT="$(toml_get canon_commit)"
 MINT_COMMIT="$(toml_get mint_commit)"
-KEYGEN_COMMIT="$(toml_get keygen_commit)"
-MIGRATE_COMMIT="$(toml_get migrate_commit)"
 ZEBRA_COMMIT="$(toml_get zebra_commit)"
 ZEBRA_VERSION="$(toml_get zebra_version)"
 KERNEL_VERSION="$(toml_get kernel_version)"
 RUST_VERSION="$(toml_get rust_version)"
-# rust-toolchain.toml in the fetched repos sets channel = "stable".
+# rust-toolchain.toml in zns-mint sets channel = "stable".
 # RUSTUP_TOOLCHAIN keeps rustc at rust_version.
 export RUSTUP_TOOLCHAIN="$RUST_VERSION"
 need rustc
@@ -369,15 +350,8 @@ case "$cargo_version" in
     ;;
 esac
 
-fetch_repo zns-canon "$(toml_get canon_repo)" "$CANON_COMMIT"
 fetch_repo zns-mint "$(toml_get mint_repo)" "$MINT_COMMIT"
-fetch_repo zns-keygen "$(toml_get keygen_repo)" "$KEYGEN_COMMIT"
-fetch_repo zns-migrate "$(toml_get migrate_repo)" "$MIGRATE_COMMIT"
 fetch_repo zebra "$(toml_get zebra_repo)" "$ZEBRA_COMMIT"
-
-warn_canon_lock zns-mint "$SRC/zns-mint/Cargo.lock"
-warn_canon_lock zns-keygen "$SRC/zns-keygen/Cargo.lock"
-warn_canon_lock zns-migrate "$SRC/zns-migrate/Cargo.lock"
 
 zebra_pkg_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$SRC/zebra/zebrad/Cargo.toml" | head -n 1)"
 if [[ "$zebra_pkg_version" != "$ZEBRA_VERSION" ]]; then
@@ -404,14 +378,16 @@ if [[ "$previous" != "$expected" ]]; then
   exit 1
 fi
 
+# Without -p, cargo resolves features for every workspace member, and the
+# zns-mint it builds is neither the testnet nor the mainnet binary.
 if [[ "$NETWORK" == "testnet" ]]; then
-  build_bin "$SRC/zns-mint" --bin zns-mint --features testnet
-  build_bin "$SRC/zns-keygen" --bin zns-keygen --features testnet
+  build_bin "$SRC/zns-mint" -p zns-mint --bin zns-mint --features testnet
+  build_bin "$SRC/zns-mint" -p zns-keygen --bin zns-keygen --features testnet
 else
-  build_bin "$SRC/zns-mint" --bin zns-mint
-  build_bin "$SRC/zns-keygen" --bin zns-keygen
+  build_bin "$SRC/zns-mint" -p zns-mint --bin zns-mint
+  build_bin "$SRC/zns-mint" -p zns-keygen --bin zns-keygen
 fi
-build_bin "$SRC/zns-migrate" --bin zns-migrate
+build_bin "$SRC/zns-mint" -p zns-migrate --bin zns-migrate
 build_bin "$SRC/zebra" -p zebrad --features indexer,prometheus
 
 rm -rf "$STAGE" "$BIN"
@@ -424,8 +400,8 @@ mkdir -p "$BIN" \
   "$STAGE/var/lib/zebra" "$STAGE/state" "$STAGE/tmp"
 
 install -m 0755 "$SRC/zns-mint/target/release/zns-mint" "$BIN/zns-mint"
-install -m 0755 "$SRC/zns-keygen/target/release/zns-keygen" "$BIN/zns-keygen"
-install -m 0755 "$SRC/zns-migrate/target/release/zns-migrate" "$BIN/zns-migrate"
+install -m 0755 "$SRC/zns-mint/target/release/zns-keygen" "$BIN/zns-keygen"
+install -m 0755 "$SRC/zns-mint/target/release/zns-migrate" "$BIN/zns-migrate"
 install -m 0755 "$SRC/zebra/target/release/zebrad" "$BIN/zebrad"
 # These two programs have no dependencies, so compile them with rustc directly.
 rustc --edition 2021 -D warnings -C opt-level=3 -C strip=symbols \
