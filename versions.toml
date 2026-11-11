@@ -3,7 +3,7 @@
 # mint_commit is what `cargo build --locked` compiles.
 
 mint_repo = "https://github.com/zcashme/zns-mint.git"
-mint_commit = "051cfd76a327e8233208e253230dff3b13170769"
+mint_commit = "9178590fe91a79d009f27e6a5b6132c57accd656"
 
 zebra_repo = "https://github.com/ZcashFoundation/zebra.git"
 zebra_commit = "e8db87eb69254e0d4eedd058eadd48bdfa09065a"
