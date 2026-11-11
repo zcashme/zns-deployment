@@ -135,7 +135,7 @@ fi
 busy=0
 for name in source.ready offer.bin attestation.bin encrypted_seed.bin \
   source_attestation.bin receipt.bin receipt_attestation.bin \
-  zns_mint.conf zns_custody_manifest.toml ceremony_state.toml \
+  zns_custody_manifest.toml \
   target.pauses source.cutover target.synced source.paused; do
   if [[ -e "$transport/$name" ]]; then
     echo "transport has $name" >&2
