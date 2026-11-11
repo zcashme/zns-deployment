@@ -90,6 +90,19 @@ if [[ "$got" != "$want" ]]; then
 fi
 rm -rf "$dir"
 
+got="$(switch_line zns-testnet-target zns-testnet-source "mint 20465 zebra 20999")"
+want="Switched from zns-testnet-target to zns-testnet-source in tmux. Host ports mint 20465 zebra 20999."
+if [[ "$got" != "$want" ]]; then
+  echo "fail: switch line: got ${got}" >&2
+  fail=1
+fi
+got="$(switch_line zns-testnet-source zns-testnet-previous "")"
+want="Switched from zns-testnet-source to zns-testnet-previous in tmux."
+if [[ "$got" != "$want" ]]; then
+  echo "fail: switch line without ports: got ${got}" >&2
+  fail=1
+fi
+
 if [[ "$fail" -ne 0 ]]; then
   exit 1
 fi
