@@ -51,7 +51,7 @@ Every launch command takes `ZNS_NETWORK=mainnet` or `ZNS_NETWORK=testnet`. That 
 
 `Ctrl-a c` switches to the QEMU monitor. `quit` stops the VM, and `Ctrl-a c` returns to the guest. `Ctrl-a x` stops it directly. This is the host powering the VM off. The guest policy keeps that monitor from reading guest memory.
 
-Each network has two pairs of host ports. The guest itself listens on 9465 and 9998. Mainnet's pairs are mint `9465` with Zebra `9999`, and mint `19465` with Zebra `19999`. Testnet's pairs are mint `10465` with Zebra `10999`, and mint `20465` with Zebra `20999`. `launch-genesis` takes the low pair. Each migrate takes the other pair of that same network: the live guest keeps the forwards it was started with when its tmux session is renamed, so the next guest has to use the pair that is free. The launch command prints the pair, and writes it to `logs/<tag>.ports` in that network's directory. A backup guest stays on its own pair, mainnet `29465` and `29999`, testnet `30465` and `30999`. Set `ZNS_MINT_FWD` and `ZNS_ZEBRA_FWD` together to choose a pair by hand. A target guest starts in tmux session `zns-<network>-target`. Its console is also written to a log file.
+Each network has two pairs of host ports. The guest itself listens on 9465 and 9998. Mainnet's pairs are mint `9465` with Zebra `9999`, and mint `19465` with Zebra `19999`. Testnet's pairs are mint `10465` with Zebra `10999`, and mint `20465` with Zebra `20999`. `launch-genesis` takes the low pair. Each migrate takes the other pair of that same network: the live guest keeps the forwards it was started with when its tmux session is renamed, so the next guest has to use the pair that is free. The launch command prints the pair, and appends a line to `logs/<tag>.ports` in that network's directory. The line is the role, `genesis`, `target`, or `backup`, then the mint port, the Zebra port, and the reason, which names the network. A later start of that tag adds another line. A backup guest stays on its own pair, mainnet `29465` and `29999`, testnet `30465` and `30999`. Set `ZNS_MINT_FWD` and `ZNS_ZEBRA_FWD` together to choose a pair by hand. A target guest starts in tmux session `zns-<network>-target`. Its console is also written to a log file.
 
 ## Moving a guest
 
@@ -94,13 +94,13 @@ sudo ZNS_NETWORK=testnet ./launch/migrate v0.1.x
 
 Replace `v0.1.x` with the release you are moving to. An older tag is a rollback, and the command allows it. Run the command as shown. The disk variables from the first command belong only there; if they are still set, `migrate` exits before it starts. The new ZNS disk is an empty file under `/home/ubuntu/zns-hops/<network>/images/<new-tag>/`. The new Zebra disk is filled from the newest chain snapshot on [snapshots.zfnd.org](https://snapshots.zfnd.org/) that this Zebra can open, when that file does not already exist. If none can, the command stops before creating the disk. The live guest's disks are not copied. A file already in that directory is left unchanged. The download stays in `/home/ubuntu/zns-hops/<network>/snapshots/`. After the new guest's Zebra is syncing, that download can be deleted. The Zebra disk image stays.
 
-Wait until the command prints `current is now v0.1.x`. That is the point at which the move has landed. The new guest's tmux session is then `zns-<network>-source`, and its console says so. The guest you started from is `zns-<network>-previous`. Its mint keeps serving while the new guest syncs Zebra and scans its wallet. When that is done, the old console logs `this mint is stopped for good` and the new mint starts.
+Wait until the command prints `current is now v0.1.x`. That is the point at which the move has landed. The new guest's tmux session is then `zns-<network>-source`, and its console says so, including the host ports that guest keeps. The guest you started from is `zns-<network>-previous`, and its console names the host ports it keeps. Its mint keeps serving while the new guest syncs Zebra and scans its wallet. When that is done, the old console logs `this mint is stopped for good` and the new mint starts.
 
 Pressing Ctrl-C while that command is still waiting stops only the wait. The new guest keeps running, in `zns-<network>-target`, and `current` stays on the old release. Run the same command again and it continues waiting. If it says `zns-<network>-previous` already exists, stop that guest, close the session, and run the same command again. If it says `zns-<network>-target` is missing, `current` stays on the old release unless the new guest is already the `zns-<network>-source` session.
 
 Leave both guests running until the old console logs `this mint is stopped for good`. Until then the new guest's mint is paused, and quitting the old guest leaves no mint running. Do not restart the new guest before that line either: a restart without this hop's transport directory skips the pause, and both mints would serve. Then attach to the old one with `tmux attach -t zns-<network>-previous`, then `Ctrl-a c`, then `quit`, when you are ready to stop it. Detach with `Ctrl-b d`. The next move is another `migrate` from a second terminal. Do not restart the live guest for that.
 
-Attach to the live guest with `tmux attach -t zns-<network>-source`. Its console is also `/home/ubuntu/zns-hops/<network>/logs/v0.1.x.console`. The host ports are the ones that launch printed, and the same numbers are in `logs/<tag>.ports`. The next migrate uses the other pair for that network.
+Attach to the live guest with `tmux attach -t zns-<network>-source`. Its console is also `/home/ubuntu/zns-hops/<network>/logs/v0.1.x.console`. The host ports are the ones that launch printed. The last line of `logs/<tag>.ports` is the role, those two ports, and the reason. The next migrate uses the other pair for that network.
 
 A copy of this same release onto another machine is the backup below. `current` stays on this release.
 
@@ -136,7 +136,7 @@ sudo ZNS_NETWORK=testnet ./launch/ssh-key-live '<the ssh-ed25519 line>'
 
 SSH from the standby account to the live host then succeeds. The first connection confirms the live host key. `stand` uses that same account.
 
-3. On the live host, read the mint metrics at the host port in `logs/<tag>.ports`. Mainnet is `9465` or `19465`. Testnet is `10465` or `20465`.
+3. On the live host, read the mint metrics at the mint port on the last line of `logs/<tag>.ports`. Mainnet is `9465` or `19465`. Testnet is `10465` or `20465`.
 
    `zns_mint_guest_info` carries `measurement` and `guest_policy`. `zns_mint_ceremony_info` carries `seed_fingerprint` and `capsule_hash`.
 

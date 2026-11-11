@@ -15,6 +15,7 @@ check() {
   if ! got="$(choose_ports "$role" "$held_m" "$held_z" "$busy" 2>/dev/null)"; then
     got="fail"
   fi
+  got="${got%%$'\n'*}"
   if [[ "$got" != "$want" ]]; then
     echo "fail: ${label}: got ${got}, want ${want}" >&2
     fail=1
@@ -47,7 +48,7 @@ ZNS_NETWORK=testnet
 ZNS_MINT_FWD=21065
 ZNS_ZEBRA_FWD=21999
 got="$(choose_ports target "" "" "" 2>/dev/null)"
-if [[ "$got" != "21065 21999" ]]; then
+if [[ "${got%%$'\n'*}" != "21065 21999" || "$got" != *$'\n''testnet, from the environment' ]]; then
   echo "fail: environment pair: got ${got}" >&2
   fail=1
 fi
@@ -66,6 +67,47 @@ line="qemu-system-x86_64 -netdev user,id=net0,hostfwd=tcp:127.0.0.1:20465-:9465,
 got="$(parse_forward_ports "$line")"
 if [[ "$got" != "20465 20999" ]]; then
   echo "fail: parse forwards: got ${got}" >&2
+  fail=1
+fi
+
+ZNS_NETWORK=testnet
+got="$(choose_ports target 19465 19999 "19465 19999" 2>/dev/null)"
+if [[ "$got" != *$'\n''testnet low pair; live guest holds 19465/19999, outside this network' ]]; then
+  echo "fail: reason line: got ${got}" >&2
+  fail=1
+fi
+
+dir="$(mktemp -d)"
+write_host_ports "$dir" v0.1.0 genesis 10465 10999 "testnet low pair"
+write_host_ports "$dir" v0.1.0 genesis 10465 10999 "testnet low pair"
+write_host_ports "$dir" v0.1.0 genesis 10465 10999 "already running"
+write_host_ports "$dir" v0.1.0 target 20465 20999 "testnet high pair; live guest holds 10465/10999"
+write_host_ports "$dir" v0.2.0 target 20465 20999 "already running"
+write_host_ports "$dir" v0.2.0 target 20465 20999 "already running"
+got="$(cat "$dir/logs/v0.1.0.ports")"
+want=$'genesis 10465 10999 testnet low pair\ngenesis 10465 10999 testnet low pair\ntarget 20465 20999 testnet high pair; live guest holds 10465/10999'
+if [[ "$got" != "$want" ]]; then
+  echo "fail: ports record: got ${got}" >&2
+  fail=1
+fi
+got="$(cat "$dir/logs/v0.2.0.ports")"
+want=$'target 20465 20999 already running'
+if [[ "$got" != "$want" ]]; then
+  echo "fail: ports record: got ${got}" >&2
+  fail=1
+fi
+rm -rf "$dir"
+
+got="$(switch_line zns-testnet-target zns-testnet-source "mint 20465 zebra 20999")"
+want="Switched from zns-testnet-target to zns-testnet-source in tmux. Host ports mint 20465 zebra 20999."
+if [[ "$got" != "$want" ]]; then
+  echo "fail: switch line: got ${got}" >&2
+  fail=1
+fi
+got="$(switch_line zns-testnet-source zns-testnet-previous "")"
+want="Switched from zns-testnet-source to zns-testnet-previous in tmux."
+if [[ "$got" != "$want" ]]; then
+  echo "fail: switch line without ports: got ${got}" >&2
   fail=1
 fi
 

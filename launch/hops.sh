@@ -179,7 +179,8 @@ qemu_forwarded_ports() {
 # $1 is genesis, target, or backup.
 # $2 and $3 are the live guest's mint and zebra host ports, or empty.
 # $4 is the space-separated list of host ports already forwarded.
-# The chosen pair is printed on stdout. The reason goes to stderr.
+# The chosen pair is printed on stdout, and the reason on the next line.
+# The same sentence also goes to stderr.
 choose_ports() {
   local role="$1" held_m="${2:-}" held_z="${3:-}" busy="${4:-}" net
   local low_m low_z high_m high_z bak_m bak_z
@@ -211,7 +212,7 @@ choose_ports() {
       return 1
     fi
     echo "host ports: mint ${ZNS_MINT_FWD} zebra ${ZNS_ZEBRA_FWD} (${net}, from the environment)" >&2
-    printf '%s %s\n' "$ZNS_MINT_FWD" "$ZNS_ZEBRA_FWD"
+    printf '%s %s\n%s\n' "$ZNS_MINT_FWD" "$ZNS_ZEBRA_FWD" "${net}, from the environment"
     return 0
   fi
   if [[ "$role" == "backup" ]]; then
@@ -255,11 +256,11 @@ choose_ports() {
       return 1
     fi
     echo "host ports: mint ${alt_m} zebra ${alt_z} (${net}; ${want_m}/${want_z} already forwarded)" >&2
-    printf '%s %s\n' "$alt_m" "$alt_z"
+    printf '%s %s\n%s\n' "$alt_m" "$alt_z" "${net}; ${want_m}/${want_z} already forwarded"
     return 0
   fi
   echo "host ports: mint ${want_m} zebra ${want_z} (${why})" >&2
-  printf '%s %s\n' "$want_m" "$want_z"
+  printf '%s %s\n%s\n' "$want_m" "$want_z" "$why"
 }
 
 # Host ports for this launch. genesis and target alternate this network's
@@ -292,12 +293,35 @@ network_ports() {
   choose_ports "$role" "$held_m" "$held_z" "$busy"
 }
 
-# Record the host ports this tag was started with.
+# Split the two lines from network_ports into mint_fwd, zebra_fwd, and port_why.
+read_port_choice() {
+  local pair="${1%%$'\n'*}"
+  port_why="${1#*$'\n'}"
+  if [[ "$port_why" == "$1" ]]; then
+    port_why=""
+  fi
+  read -r mint_fwd zebra_fwd <<<"$pair"
+}
+
+# Append "<role> <mint> <zebra> <reason>" to logs/<tag>.ports.
+# The reason names the network. Each start of this tag adds a line.
+# A guest that is already running keeps the reason recorded at its start.
 write_host_ports() {
-  local hops="$1" tag="$2" mint="$3" zebra="$4" path
+  local hops="$1" tag="$2" role="$3" mint="$4" zebra="$5" why="${6:-}"
+  local path line="" record="$3 $4 $5"
+  if [[ -n "$why" ]]; then
+    record="$record $why"
+  fi
   mkdir -p "$hops/logs"
   path="$hops/logs/${tag}.ports"
-  printf '%s %s\n' "$mint" "$zebra" >"$path"
+  if [[ -f "$path" ]]; then
+    line="$(tail -n 1 "$path" || true)"
+    line="${line//$'\r'/}"
+  fi
+  if [[ "$why" == "already running" && "$line" == "$role $mint $zebra"* ]]; then
+    return 0
+  fi
+  printf '%s\n' "$record" >>"$path"
   if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
     chown "$SUDO_USER" "$path" || true
   fi
@@ -418,20 +442,48 @@ qemu_in_session() {
   return 1
 }
 
+# Host ports of the running guest for this tag, "mint N zebra N", or empty.
+guest_host_ports() {
+  local tag="$1" name line mint="" zebra=""
+  name="$(guest_qemu_name "$tag")" || return 1
+  line="$(pgrep -af qemu-system-x86_64 | grep -F -- "-name ${name} -nographic" | head -n 1 || true)"
+  if [[ -z "$line" ]]; then
+    return 0
+  fi
+  read -r mint zebra < <(parse_forward_ports "$line")
+  if [[ -n "$mint" && -n "$zebra" ]]; then
+    printf 'mint %s zebra %s\n' "$mint" "$zebra"
+  fi
+}
+
+# The rename line. $3 is the host-port phrase from guest_host_ports, or empty.
+switch_line() {
+  if [[ -n "${3:-}" ]]; then
+    printf 'Switched from %s to %s in tmux. Host ports %s.\n' "$1" "$2" "$3"
+  else
+    printf 'Switched from %s to %s in tmux.\n' "$1" "$2"
+  fi
+}
+
 # The live guest occupies zns-<network>-source. The guest being moved
 # occupies zns-<network>-target until receipt.bin, then takes that name.
 # The previous guest keeps running as zns-<network>-previous until its
-# session is closed. A missing target session is a finished rename only
-# when that QEMU is already the source pane. Any other absence leaves
-# current unchanged.
+# session is closed. Each rename line names the host ports that guest keeps.
+# A missing target session is a finished rename only when that QEMU is
+# already the source pane. Any other absence leaves current unchanged.
 claim_source_session() {
-  local from="$1" to="$2" retired=0 source target previous
+  local from="$1" to="$2" retired=0 source target previous ports=""
   source="$(guest_session source)" || return 1
   target="$(guest_session target)" || return 1
   previous="$(guest_session previous)" || return 1
   if ! operator_tmux has-session -t "$target" 2>/dev/null; then
     if qemu_in_session "$source" "$to"; then
-      echo "target qemu is already in tmux session ${source}"
+      ports="$(guest_host_ports "$to" || true)"
+      if [[ -n "$ports" ]]; then
+        echo "target qemu is already in tmux session ${source}. Host ports ${ports}."
+      else
+        echo "target qemu is already in tmux session ${source}"
+      fi
       return 0
     fi
     echo "tmux session ${target} is missing; current stays ${from}." >&2
@@ -444,12 +496,14 @@ claim_source_session() {
       return 1
     fi
     operator_tmux rename-session -t "$source" "$previous"
-    console_line "$previous" "Switched from ${source} to ${previous} in tmux."
+    ports="$(guest_host_ports "$from" || true)"
+    console_line "$previous" "$(switch_line "$source" "$previous" "$ports")"
     console_line "$previous" "The version ${to} has the seed. Keep ${from} running until this console says this mint is stopped for good."
     retired=1
   fi
   operator_tmux rename-session -t "$target" "$source"
-  console_line "$source" "Switched from ${target} to ${source} in tmux."
+  ports="$(guest_host_ports "$to" || true)"
+  console_line "$source" "$(switch_line "$target" "$source" "$ports")"
   if [[ "$retired" -eq 0 ]]; then
     echo "The version ${to} has the seed. Keep ${from} running until its console says this mint is stopped for good."
   fi
