@@ -179,7 +179,8 @@ qemu_forwarded_ports() {
 # $1 is genesis, target, or backup.
 # $2 and $3 are the live guest's mint and zebra host ports, or empty.
 # $4 is the space-separated list of host ports already forwarded.
-# The chosen pair is printed on stdout. The reason goes to stderr.
+# The chosen pair is printed on stdout, and the reason on the next line.
+# The same sentence also goes to stderr.
 choose_ports() {
   local role="$1" held_m="${2:-}" held_z="${3:-}" busy="${4:-}" net
   local low_m low_z high_m high_z bak_m bak_z
@@ -211,7 +212,7 @@ choose_ports() {
       return 1
     fi
     echo "host ports: mint ${ZNS_MINT_FWD} zebra ${ZNS_ZEBRA_FWD} (${net}, from the environment)" >&2
-    printf '%s %s\n' "$ZNS_MINT_FWD" "$ZNS_ZEBRA_FWD"
+    printf '%s %s\n%s\n' "$ZNS_MINT_FWD" "$ZNS_ZEBRA_FWD" "${net}, from the environment"
     return 0
   fi
   if [[ "$role" == "backup" ]]; then
@@ -255,11 +256,11 @@ choose_ports() {
       return 1
     fi
     echo "host ports: mint ${alt_m} zebra ${alt_z} (${net}; ${want_m}/${want_z} already forwarded)" >&2
-    printf '%s %s\n' "$alt_m" "$alt_z"
+    printf '%s %s\n%s\n' "$alt_m" "$alt_z" "${net}; ${want_m}/${want_z} already forwarded"
     return 0
   fi
   echo "host ports: mint ${want_m} zebra ${want_z} (${why})" >&2
-  printf '%s %s\n' "$want_m" "$want_z"
+  printf '%s %s\n%s\n' "$want_m" "$want_z" "$why"
 }
 
 # Host ports for this launch. genesis and target alternate this network's
@@ -292,20 +293,39 @@ network_ports() {
   choose_ports "$role" "$held_m" "$held_z" "$busy"
 }
 
-# Append "<role> <mint> <zebra>" to logs/<tag>.ports.
-# A later start of this tag adds its own line. Repeating the last line does not.
+# Split the two lines from network_ports into mint_fwd, zebra_fwd, and port_why.
+read_port_choice() {
+  local pair="${1%%$'\n'*}"
+  port_why="${1#*$'\n'}"
+  if [[ "$port_why" == "$1" ]]; then
+    port_why=""
+  fi
+  read -r mint_fwd zebra_fwd <<<"$pair"
+}
+
+# Append "<role> <mint> <zebra> <reason>" to logs/<tag>.ports.
+# The reason names the network. A later start of this tag adds its own line.
+# The same line is not written twice. A guest that is already running keeps
+# the reason recorded at its start.
 write_host_ports() {
-  local hops="$1" tag="$2" role="$3" mint="$4" zebra="$5" path line=""
+  local hops="$1" tag="$2" role="$3" mint="$4" zebra="$5" why="${6:-}"
+  local path line="" record="$3 $4 $5"
+  if [[ -n "$why" ]]; then
+    record="$record $why"
+  fi
   mkdir -p "$hops/logs"
   path="$hops/logs/${tag}.ports"
   if [[ -f "$path" ]]; then
     line="$(tail -n 1 "$path" || true)"
     line="${line//$'\r'/}"
   fi
-  if [[ "$line" == "$role $mint $zebra" ]]; then
+  if [[ "$line" == "$record" ]]; then
     return 0
   fi
-  printf '%s %s %s\n' "$role" "$mint" "$zebra" >>"$path"
+  if [[ "$why" == "already running" && "$line" == "$role $mint $zebra"* ]]; then
+    return 0
+  fi
+  printf '%s\n' "$record" >>"$path"
   if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
     chown "$SUDO_USER" "$path" || true
   fi

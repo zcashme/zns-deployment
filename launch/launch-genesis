@@ -100,7 +100,7 @@ if operator_tmux has-session -t "$session" 2>/dev/null; then
 fi
 
 ports="$(network_ports genesis)" || exit 1
-read -r mint_fwd zebra_fwd <<<"$ports"
+read_port_choice "$ports"
 
 # The session belongs to the operator and starts QEMU with sudo -n. Without
 # passwordless sudo it would die before its output could be logged.
@@ -167,6 +167,6 @@ if ! pgrep -af qemu-system-x86_64 | grep -F -- "-name ${name} -nographic" >/dev/
   exit 1
 fi
 echo "$name is running in tmux session ${session}"
-write_host_ports "$hops" "$version" genesis "$mint_fwd" "$zebra_fwd"
+write_host_ports "$hops" "$version" genesis "$mint_fwd" "$zebra_fwd" "$port_why"
 echo "metrics: 127.0.0.1:${mint_fwd}/metrics and 127.0.0.1:${zebra_fwd}/metrics"
 echo "attach with: tmux attach -t ${session}"
