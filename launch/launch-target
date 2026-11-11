@@ -139,7 +139,7 @@ if [[ -n "$pid" ]]; then
   read -r mint_fwd zebra_fwd < <(parse_forward_ports "$line")
   if [[ -n "$mint_fwd" && -n "$zebra_fwd" ]]; then
     echo "host ports: mint ${mint_fwd} zebra ${zebra_fwd} (already running)"
-    write_host_ports "$hops" "$to" "$mint_fwd" "$zebra_fwd"
+    write_host_ports "$hops" "$to" target "$mint_fwd" "$zebra_fwd"
   fi
   exit 0
 fi
@@ -188,7 +188,7 @@ if [[ -z "$pid" ]] || ! kill -0 "$pid" 2>/dev/null; then
   exit 1
 fi
 printf '%s\n' "$pid" >"$pidfile"
-write_host_ports "$hops" "$to" "$mint_fwd" "$zebra_fwd"
+write_host_ports "$hops" "$to" target "$mint_fwd" "$zebra_fwd"
 if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
   chown "$SUDO_USER" "$pidfile" || true
 fi

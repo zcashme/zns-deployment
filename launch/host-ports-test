@@ -69,6 +69,18 @@ if [[ "$got" != "20465 20999" ]]; then
   fail=1
 fi
 
+dir="$(mktemp -d)"
+write_host_ports "$dir" v0.1.0 genesis 10465 10999
+write_host_ports "$dir" v0.1.0 genesis 10465 10999
+write_host_ports "$dir" v0.1.0 target 20465 20999
+got="$(cat "$dir/logs/v0.1.0.ports")"
+want=$'genesis 10465 10999\ntarget 20465 20999'
+if [[ "$got" != "$want" ]]; then
+  echo "fail: ports record: got ${got}" >&2
+  fail=1
+fi
+rm -rf "$dir"
+
 if [[ "$fail" -ne 0 ]]; then
   exit 1
 fi

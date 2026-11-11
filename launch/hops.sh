@@ -292,12 +292,20 @@ network_ports() {
   choose_ports "$role" "$held_m" "$held_z" "$busy"
 }
 
-# Record the host ports this tag was started with.
+# Append "<role> <mint> <zebra>" to logs/<tag>.ports.
+# A later start of this tag adds its own line. Repeating the last line does not.
 write_host_ports() {
-  local hops="$1" tag="$2" mint="$3" zebra="$4" path
+  local hops="$1" tag="$2" role="$3" mint="$4" zebra="$5" path line=""
   mkdir -p "$hops/logs"
   path="$hops/logs/${tag}.ports"
-  printf '%s %s\n' "$mint" "$zebra" >"$path"
+  if [[ -f "$path" ]]; then
+    line="$(tail -n 1 "$path" || true)"
+    line="${line//$'\r'/}"
+  fi
+  if [[ "$line" == "$role $mint $zebra" ]]; then
+    return 0
+  fi
+  printf '%s %s %s\n' "$role" "$mint" "$zebra" >>"$path"
   if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
     chown "$SUDO_USER" "$path" || true
   fi

@@ -426,7 +426,7 @@ stand() {
     exit 1
   fi
   echo "$name is running in tmux session ${session}"
-  write_host_ports "$hops" "backup-${tag}" "$mint_fwd" "$zebra_fwd"
+  write_host_ports "$hops" "backup-${tag}" backup "$mint_fwd" "$zebra_fwd"
   echo "attach with: tmux attach -t ${session}"
   net="$(require_network)" || exit 1
   echo "on the live host, with this guest already up: sudo ZNS_NETWORK=${net} ./launch/backup publish"
