@@ -82,8 +82,16 @@ write_host_ports "$dir" v0.1.0 genesis 10465 10999 "testnet low pair"
 write_host_ports "$dir" v0.1.0 genesis 10465 10999 "testnet low pair"
 write_host_ports "$dir" v0.1.0 genesis 10465 10999 "already running"
 write_host_ports "$dir" v0.1.0 target 20465 20999 "testnet high pair; live guest holds 10465/10999"
+write_host_ports "$dir" v0.2.0 target 20465 20999 "already running"
+write_host_ports "$dir" v0.2.0 target 20465 20999 "already running"
 got="$(cat "$dir/logs/v0.1.0.ports")"
-want=$'genesis 10465 10999 testnet low pair\ntarget 20465 20999 testnet high pair; live guest holds 10465/10999'
+want=$'genesis 10465 10999 testnet low pair\ngenesis 10465 10999 testnet low pair\ntarget 20465 20999 testnet high pair; live guest holds 10465/10999'
+if [[ "$got" != "$want" ]]; then
+  echo "fail: ports record: got ${got}" >&2
+  fail=1
+fi
+got="$(cat "$dir/logs/v0.2.0.ports")"
+want=$'target 20465 20999 already running'
 if [[ "$got" != "$want" ]]; then
   echo "fail: ports record: got ${got}" >&2
   fail=1

@@ -304,9 +304,8 @@ read_port_choice() {
 }
 
 # Append "<role> <mint> <zebra> <reason>" to logs/<tag>.ports.
-# The reason names the network. A later start of this tag adds its own line.
-# The same line is not written twice. A guest that is already running keeps
-# the reason recorded at its start.
+# The reason names the network. Each start of this tag adds a line.
+# A guest that is already running keeps the reason recorded at its start.
 write_host_ports() {
   local hops="$1" tag="$2" role="$3" mint="$4" zebra="$5" why="${6:-}"
   local path line="" record="$3 $4 $5"
@@ -318,9 +317,6 @@ write_host_ports() {
   if [[ -f "$path" ]]; then
     line="$(tail -n 1 "$path" || true)"
     line="${line//$'\r'/}"
-  fi
-  if [[ "$line" == "$record" ]]; then
-    return 0
   fi
   if [[ "$why" == "already running" && "$line" == "$role $mint $zebra"* ]]; then
     return 0
