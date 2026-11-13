@@ -1,7 +1,8 @@
 # Measurements whose name notes use the rcm/ψ form.
 # pause: the guest writes /migration/source.paused after its mint exits.
-# preset: the guest sends the capsule only after zns-mint is gone and
-# leaves its mint hold set. That transport has no source.paused.
+# preset: the guest removes its mint hold when the send fails, and the
+# transport has no source.paused. Rebind waits for /migration/source.stopped,
+# which the operator writes after that guest is shut down.
 # v1.2.0 and v1.2.1 published no measurement file.
 mainnet c34ba6fd11d849780cccc70bded1c94525dccc68639eaa77d460aac2046f2d53538931be15d9c6034cb40026fa309ca7 preset
 mainnet edb79a05f695f8645b3d00baa43f2bdfe3561c98082ed25ef7811751e01619e8944b5ba4914e07d567e4b78f9f16d8a3 preset

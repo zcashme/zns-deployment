@@ -267,9 +267,10 @@ legacy_rebind_source() {
   grep -q "^${from} " /etc/zns-rebind-from
 }
 
-# pause: wait for /migration/source.paused.
-# preset: migrate-target.done means that initrd already observed zns-mint
-# gone and left its hold set. The transport carries no source.paused.
+# pause: the source writes /migration/source.paused after its mint exits.
+# preset: a failed send removes that source's mint hold, and it never
+# writes source.paused. /migration/source.stopped is the operator's
+# confirmation that the source guest is shut down.
 rebind_stop_class() {
   [ -f /etc/zns-rebind-from ] || return 1
   line=$(grep "^${1} " /etc/zns-rebind-from 2>/dev/null || true)
@@ -285,11 +286,15 @@ record_rebind_from() {
   sync || return 1
 }
 
-# The previous mint is stopped for this source's class.
+# The previous mint is stopped for this source's class. A preset source
+# also needs the finished target marker, so the operator file alone does
+# not start rebind.
 source_mint_stopped() {
   case "$1" in
     pause) [ -f /migration/source.paused ] ;;
-    preset) [ -f "$STATE_DIR/migrate-target.done" ] ;;
+    preset)
+      [ -f "$STATE_DIR/migrate-target.done" ] && [ -f /migration/source.stopped ]
+      ;;
     *) return 1 ;;
   esac
 }
@@ -339,7 +344,11 @@ run_rebind() {
   while ! source_mint_stopped "$class"; do
     ticks=$((ticks + 1))
     if [ "$ticks" -eq 1 ] || [ $((ticks % 12)) -eq 0 ]; then
-      log "waiting until the previous mint has stopped"
+      if [ "$class" = "preset" ]; then
+        log "waiting until the source guest is shut down; create source.stopped in the migration transport"
+      else
+        log "waiting until the previous mint has stopped"
+      fi
     fi
     watch_supervisor
     sleep 5 || fatal "sleep failed"
@@ -774,7 +783,8 @@ watch_target() {
     printf 'backup\n' >/run/backup-target || return
     printf 'hold\n' >"$STATE_DIR/migrate-source.hold" || return
   else
-    rm -f /migration/source.cutover /migration/target.synced /migration/source.paused
+    rm -f /migration/source.cutover /migration/target.synced /migration/source.paused \
+      /migration/source.stopped
     if legacy_rebind_source; then
       # Mint stays stopped until rebind.done. The source keeps serving
       # only when target.pauses is present, so this handoff stops it.
