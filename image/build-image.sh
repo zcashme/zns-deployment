@@ -433,11 +433,20 @@ if [[ -z "$release" ]]; then
   release="$(git -C "$ROOT" describe --tags --exact-match 2>/dev/null || true)"
 fi
 printf '%s\n' "$release" >"$STAGE/etc/zns-release"
-# Measurements whose name notes are the rcm/ψ form. A migration from one
-# of them runs zns-rebind. Any other source does not.
-awk -v net="$NETWORK" '$1 == net { print $2 }' "$ROOT/image/rebind-from.txt" >"$STAGE/etc/zns-rebind-from"
-if [[ ! -s "$STAGE/etc/zns-rebind-from" ]]; then
-  echo "image/rebind-from.txt has no measurements for ${NETWORK}" >&2
+# Measurements whose name notes are the rcm/ψ form, and how that guest
+# confirms its mint has stopped. A migration from one of them runs zns-rebind.
+if ! awk -v net="$NETWORK" '
+  $1 == net {
+    if ($3 != "pause" && $3 != "preset") {
+      printf "rebind-from.txt: %s has no stop class\n", $2 > "/dev/stderr"
+      exit 2
+    }
+    print $2, $3
+    n++
+  }
+  END { if (n+0 == 0) exit 3 }
+' "$ROOT/image/rebind-from.txt" >"$STAGE/etc/zns-rebind-from"; then
+  echo "image/rebind-from.txt has no usable measurements for ${NETWORK}" >&2
   exit 1
 fi
 if [[ -z "$release" ]]; then
