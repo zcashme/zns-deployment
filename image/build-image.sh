@@ -433,10 +433,13 @@ if [[ -z "$release" ]]; then
   release="$(git -C "$ROOT" describe --tags --exact-match 2>/dev/null || true)"
 fi
 printf '%s\n' "$release" >"$STAGE/etc/zns-release"
-# A cross-release target of this image runs zns-rebind. No old-format
-# names on that chain means the manifest migrate installed is already the
-# one the mint reads, and mint starts.
-printf '%s\n' "$MINT_COMMIT" >"$STAGE/etc/zns-rebind-once"
+# Measurements whose name notes are the rcm/ψ form. A migration from one
+# of them runs zns-rebind. Any other source does not.
+awk -v net="$NETWORK" '$1 == net { print $2 }' "$ROOT/image/rebind-from.txt" >"$STAGE/etc/zns-rebind-from"
+if [[ ! -s "$STAGE/etc/zns-rebind-from" ]]; then
+  echo "image/rebind-from.txt has no measurements for ${NETWORK}" >&2
+  exit 1
+fi
 if [[ -z "$release" ]]; then
   echo "no release tag; the guest will not name a release on the console" >&2
 fi
