@@ -5,8 +5,8 @@
 #   ./image/build-image.sh testnet
 #
 # Fetches the pinned zns-mint workspace and Zebra, builds zns-mint,
-# zns-keygen, zns-migrate, and zebrad, checks the Sapling parameters, and
-# packs build/zns-initrd.img.
+# zns-keygen, zns-migrate, zns-rebind, and zebrad, checks the Sapling
+# parameters, and packs build/zns-initrd.img.
 # The network is one of versions.toml networks. It selects the zns-mint and
 # zns-keygen features and the Zebra network and ports, so each network is
 # its own image and its own measurement.
@@ -383,9 +383,11 @@ fi
 if [[ "$NETWORK" == "testnet" ]]; then
   build_bin "$SRC/zns-mint" -p zns-mint --bin zns-mint --features testnet
   build_bin "$SRC/zns-mint" -p zns-keygen --bin zns-keygen --features testnet
+  build_bin "$SRC/zns-mint" -p zns-rebind --bin zns-rebind --features testnet
 else
   build_bin "$SRC/zns-mint" -p zns-mint --bin zns-mint
   build_bin "$SRC/zns-mint" -p zns-keygen --bin zns-keygen
+  build_bin "$SRC/zns-mint" -p zns-rebind --bin zns-rebind
 fi
 build_bin "$SRC/zns-mint" -p zns-migrate --bin zns-migrate
 build_bin "$SRC/zebra" -p zebrad --features indexer,prometheus
@@ -402,13 +404,14 @@ mkdir -p "$BIN" \
 install -m 0755 "$SRC/zns-mint/target/release/zns-mint" "$BIN/zns-mint"
 install -m 0755 "$SRC/zns-mint/target/release/zns-keygen" "$BIN/zns-keygen"
 install -m 0755 "$SRC/zns-mint/target/release/zns-migrate" "$BIN/zns-migrate"
+install -m 0755 "$SRC/zns-mint/target/release/zns-rebind" "$BIN/zns-rebind"
 install -m 0755 "$SRC/zebra/target/release/zebrad" "$BIN/zebrad"
 # These two programs have no dependencies, so compile them with rustc directly.
 rustc --edition 2021 -D warnings -C opt-level=3 -C strip=symbols \
   -o "$BIN/zns-supervise" "$ROOT/image/zns-supervise.rs"
 rustc --edition 2021 -D warnings -C opt-level=3 -C strip=symbols \
   -o "$BIN/zns-forward" "$ROOT/image/metrics-forward.rs"
-install -m 0755 "$BIN/zns-supervise" "$BIN/zns-forward" "$BIN/zns-mint" "$BIN/zns-keygen" "$BIN/zns-migrate" "$BIN/zebrad" "$STAGE/usr/local/bin/"
+install -m 0755 "$BIN/zns-supervise" "$BIN/zns-forward" "$BIN/zns-mint" "$BIN/zns-keygen" "$BIN/zns-migrate" "$BIN/zns-rebind" "$BIN/zebrad" "$STAGE/usr/local/bin/"
 python3 "$ROOT/image/install-guest.py" \
   --archive "$(toml_get guest_archive)" \
   --debs "$ROOT/image/guest-debs.sha256" \
@@ -419,6 +422,7 @@ python3 "$ROOT/image/install-guest.py" \
   --bin "$STAGE/usr/local/bin/zns-mint" \
   --bin "$STAGE/usr/local/bin/zns-keygen" \
   --bin "$STAGE/usr/local/bin/zns-migrate" \
+  --bin "$STAGE/usr/local/bin/zns-rebind" \
   --bin "$STAGE/usr/local/bin/zebrad"
 ln -sf kmod "$STAGE/usr/bin/insmod"
 install -m 0644 "$zebrad_config" "$STAGE/etc/zebra/zebrad.toml"
@@ -429,6 +433,8 @@ if [[ -z "$release" ]]; then
   release="$(git -C "$ROOT" describe --tags --exact-match 2>/dev/null || true)"
 fi
 printf '%s\n' "$release" >"$STAGE/etc/zns-release"
+# The guest runs zns-rebind when this file is in the image.
+printf '%s\n' "$MINT_COMMIT" >"$STAGE/etc/zns-rebind-once"
 if [[ -z "$release" ]]; then
   echo "no release tag; the guest will not name a release on the console" >&2
 fi

@@ -210,6 +210,51 @@ watch_supervisor() {
   start_supervisor
 }
 
+# One run on a migration target. rebind.done means the manifest birthday
+# is the anchor block. rebind.started without rebind.done keeps the hold:
+# rebind is not started again.
+run_rebind() {
+  [ -f /etc/zns-rebind-once ] || return 0
+  [ -f /run/backup-target ] && return 0
+  if [ -f "$STATE_DIR/rebind.done" ]; then
+    rm -f "$STATE_DIR/migrate-source.hold" || fatal "could not clear the mint hold"
+    log "rebind already finished"
+    return 0
+  fi
+  if [ -f "$STATE_DIR/rebind.started" ]; then
+    if [ ! -f "$STATE_DIR/migrate-source.hold" ]; then
+      printf 'hold\n' >"$STATE_DIR/migrate-source.hold" || fatal "could not write the mint hold"
+    fi
+    log "rebind did not finish; mint stays stopped"
+    return 0
+  fi
+  if [ ! -f "$STATE_DIR/migrate-source.hold" ]; then
+    printf 'hold\n' >"$STATE_DIR/migrate-source.hold" || fatal "could not write the mint hold"
+  fi
+  ticks=0
+  while [ ! -f /migration/source.paused ]; do
+    ticks=$((ticks + 1))
+    if [ "$ticks" -eq 1 ] || [ $((ticks % 12)) -eq 0 ]; then
+      log "waiting until the previous mint has stopped"
+    fi
+    watch_supervisor
+    sleep 5 || fatal "sleep failed"
+  done
+  log "running rebind"
+  printf 'started\n' >"$STATE_DIR/rebind.started" || fatal "could not write rebind.started"
+  sync || fatal "could not sync rebind.started"
+  status=0
+  /usr/local/bin/zns-rebind >>"$STATE_DIR/log/rebind.log" 2>&1 || status=$?
+  if [ "$status" -ne 0 ]; then
+    log "rebind failed ($status); mint stays stopped"
+    return 0
+  fi
+  printf 'done\n' >"$STATE_DIR/rebind.done" || fatal "could not write rebind.done"
+  sync || fatal "could not sync rebind.done"
+  rm -f "$STATE_DIR/migrate-source.hold" || fatal "could not clear the mint hold"
+  log "rebind finished; mint can start"
+}
+
 print_access_code_key() {
   # One line per boot. The public key is derived from the seed, so a later
   # boot prints the same line. stdout is the hex key. Tracing stays in the log.
@@ -590,9 +635,15 @@ watch_target() {
     printf 'hold\n' >"$STATE_DIR/migrate-source.hold" || return
   else
     rm -f /migration/source.cutover /migration/target.synced /migration/source.paused
-    # This release pauses its mint for the cutover. A source keeps serving
-    # after the handoff only when it sees this file.
-    printf 'pauses\n' >/migration/target.pauses || return
+    if [ -f /etc/zns-rebind-once ]; then
+      # Mint stays stopped until rebind.done. The source keeps serving
+      # only when target.pauses is present, so this handoff stops it.
+      printf 'hold\n' >"$STATE_DIR/migrate-source.hold" || return
+    else
+      # This release pauses its mint for the cutover. A source keeps serving
+      # after the handoff only when it sees this file.
+      printf 'pauses\n' >/migration/target.pauses || return
+    fi
   fi
   log "running zns-migrate target"
   /usr/local/bin/zns-migrate target \
@@ -940,6 +991,18 @@ if grep -q ' /upgrade-next ' /proc/mounts; then
     sleep 5 || fatal "sleep failed"
   done
   log "migration target has the capsule"
+  if [ -f /etc/zns-rebind-once ]; then
+    ticks=0
+    while [ ! -f "$STATE_DIR/migrate-target.done" ]; do
+      ticks=$((ticks + 1))
+      if [ "$ticks" -eq 1 ] || [ $((ticks % 12)) -eq 0 ]; then
+        log "waiting for the migration target to finish"
+      fi
+      watch_supervisor
+      sleep 5 || fatal "sleep failed"
+    done
+    run_rebind
+  fi
 else
 log "running keygen"
 log "keygen output is in $STATE_DIR/log/keygen.log"
