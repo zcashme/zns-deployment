@@ -210,6 +210,162 @@ watch_supervisor() {
   start_supervisor
 }
 
+# rebind.hold stops mint until this disk's rebind result is recorded.
+# migrate-source.hold belongs to a cutover and is left in place.
+rebind_hold() {
+  [ -f "$STATE_DIR/rebind.hold" ] && return 0
+  printf 'hold\n' >"$STATE_DIR/rebind.hold" || fatal "could not write the rebind hold"
+}
+
+rebind_release() {
+  rm -f "$STATE_DIR/rebind.hold" || fatal "could not clear the rebind hold"
+}
+
+# 96 hex characters. The upgrade document and rebind.from both store one.
+measurement_hex() {
+  case "$1" in
+    *[!0-9a-f]*|"") return 1 ;;
+  esac
+  [ "${#1}" -eq 96 ]
+}
+
+# The staged upgrade document. /run is empty after a restart.
+staged_from_measurement() {
+  [ -f /run/zns-upgrade/upgrade.toml ] || return 1
+  from_line=$(grep '^from_measurement = "' /run/zns-upgrade/upgrade.toml 2>/dev/null || true)
+  from=${from_line#*\"}
+  from=${from%\"}
+  measurement_hex "$from" || return 1
+  printf '%s' "$from"
+}
+
+# Written before rebind.hold, so a restart can classify the source with
+# nothing left under /run.
+recorded_from_measurement() {
+  [ -f "$STATE_DIR/rebind.from" ] || return 1
+  from=""
+  IFS= read -r from <"$STATE_DIR/rebind.from" || return 1
+  measurement_hex "$from" || return 1
+  printf '%s' "$from"
+}
+
+# The staged document wins when it is present. rebind.from is the copy
+# that survives a restart.
+rebind_from_measurement() {
+  from=""
+  if from=$(staged_from_measurement); then
+    printf '%s' "$from"
+    return 0
+  fi
+  recorded_from_measurement
+}
+
+# True when this handoff's source measurement is in /etc/zns-rebind-from.
+legacy_rebind_source() {
+  [ -f /etc/zns-rebind-from ] || return 1
+  from=$(rebind_from_measurement) || return 1
+  grep -q "^${from} " /etc/zns-rebind-from
+}
+
+# pause: the source writes /migration/source.paused after its mint exits.
+# preset: a failed send removes that source's mint hold, and it never
+# writes source.paused. /migration/source.stopped is the operator's
+# confirmation that the source guest is shut down.
+rebind_stop_class() {
+  [ -f /etc/zns-rebind-from ] || return 1
+  line=$(grep "^${1} " /etc/zns-rebind-from 2>/dev/null || true)
+  class=${line#* }
+  case "$class" in
+    pause|preset) printf '%s' "$class" ;;
+    *) return 1 ;;
+  esac
+}
+
+record_rebind_from() {
+  printf '%s\n' "$1" >"$STATE_DIR/rebind.from" || return 1
+  sync || return 1
+}
+
+# The previous mint is stopped for this source's class. A preset source
+# also needs the finished target marker, so the operator file alone does
+# not start rebind.
+source_mint_stopped() {
+  case "$1" in
+    pause) [ -f /migration/source.paused ] ;;
+    preset)
+      [ -f "$STATE_DIR/migrate-target.done" ] && [ -f /migration/source.stopped ]
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+rebind_record_done() {
+  printf 'done\n' >"$STATE_DIR/rebind.done" || fatal "could not write rebind.done"
+  sync || fatal "could not sync rebind.done"
+  rebind_release
+}
+
+# One run on a migration from a listed measurement. rebind.done means the
+# manifest birthday is the anchor block. rebind.started without rebind.done
+# keeps rebind.hold. Rebind is not started again. A refusal because no
+# old-format name is live leaves the hold: that manifest is not rewritten,
+# and an empty legacy registry is not a bound one.
+# rebind.from, rebind.hold, rebind.started, and rebind.done are on the state
+# disk. This runs on a boot whose /run no longer has the upgrade document.
+run_rebind() {
+  [ -f /run/backup-target ] && return 0
+  if [ -f "$STATE_DIR/rebind.done" ]; then
+    if [ -f "$STATE_DIR/rebind.hold" ]; then
+      rebind_release
+      log "rebind already finished"
+    fi
+    return 0
+  fi
+  if [ -f "$STATE_DIR/rebind.started" ]; then
+    rebind_hold
+    log "rebind did not finish; mint stays stopped"
+    return 0
+  fi
+  if ! legacy_rebind_source; then
+    if [ -f "$STATE_DIR/rebind.hold" ] || [ -f "$STATE_DIR/rebind.from" ]; then
+      rebind_hold
+      log "rebind source is not recorded; mint stays stopped"
+    fi
+    return 0
+  fi
+  from=$(rebind_from_measurement) || fatal "rebind source measurement is missing"
+  record_rebind_from "$from" || fatal "could not record the rebind source"
+  rebind_hold
+  class=$(rebind_stop_class "$from") || {
+    log "rebind source has no stop confirmation; mint stays stopped"
+    return 0
+  }
+  ticks=0
+  while ! source_mint_stopped "$class"; do
+    ticks=$((ticks + 1))
+    if [ "$ticks" -eq 1 ] || [ $((ticks % 12)) -eq 0 ]; then
+      if [ "$class" = "preset" ]; then
+        log "waiting until the source guest is shut down; create source.stopped in the migration transport"
+      else
+        log "waiting until the previous mint has stopped"
+      fi
+    fi
+    watch_supervisor
+    sleep 5 || fatal "sleep failed"
+  done
+  log "running rebind"
+  printf 'started\n' >"$STATE_DIR/rebind.started" || fatal "could not write rebind.started"
+  sync || fatal "could not sync rebind.started"
+  status=0
+  /usr/local/bin/zns-rebind >>"$STATE_DIR/log/rebind.log" 2>&1 || status=$?
+  if [ "$status" -ne 0 ]; then
+    log "rebind failed ($status); mint stays stopped"
+    return 0
+  fi
+  rebind_record_done
+  log "rebind finished; mint can start"
+}
+
 print_access_code_key() {
   # One line per boot. The public key is derived from the seed, so a later
   # boot prints the same line. stdout is the hex key. Tracing stays in the log.
@@ -414,6 +570,11 @@ ceremony_complete() {
 
 source_allowed() {
   [ -f "$STATE_DIR/keys/zns_seed.capsule" ] || return 1
+  # rebind.hold is written before a legacy capsule arrives and removed
+  # when rebind.done is written. A backup does not write it.
+  if [ -f "$STATE_DIR/rebind.hold" ]; then
+    return 1
+  fi
   if ceremony_complete; then
     return 0
   fi
@@ -554,6 +715,39 @@ cutover_pending() {
   return 0
 }
 
+# The capsule, the custody manifest, and the attestation are committed
+# together. The receipt pair is published after that commit and before
+# zns-migrate target returns. Those five files are a finished handoff.
+target_handoff_complete() {
+  [ -s "$STATE_DIR/keys/zns_seed.capsule" ] || return 1
+  [ -s "$STATE_DIR/keys/zns_custody_manifest.toml" ] || return 1
+  [ -s "$STATE_DIR/keys/zns_attestation.bin" ] || return 1
+  [ -s /migration/receipt.bin ] || return 1
+  [ -s /migration/receipt_attestation.bin ] || return 1
+}
+
+# migrate-target.done is this shell's record of a published receipt.
+# The receipt pair plus the three committed files are enough to write it
+# when the marker is absent. The upgrade document supplies the artifact line.
+record_finished_target() {
+  [ -f "$STATE_DIR/migrate-target.done" ] && return 0
+  target_handoff_complete || return 1
+  doc=""
+  if [ -f /run/zns-upgrade/upgrade.toml ]; then
+    doc=/run/zns-upgrade
+  elif [ -f /upgrade/upgrade.toml ]; then
+    doc=/upgrade
+  else
+    return 1
+  fi
+  artifact="$(artifact_line "$doc")"
+  [ -n "$artifact" ] || return 1
+  printf '%s\n' "$artifact" >"$STATE_DIR/migrate-target.done" ||
+    fatal "could not write migrate-target.done"
+  sync || fatal "could not sync migrate-target.done"
+  log "migration target finished"
+}
+
 watch_target() {
   if [ -f "$STATE_DIR/migrate-target.done" ]; then
     return 0
@@ -589,10 +783,22 @@ watch_target() {
     printf 'backup\n' >/run/backup-target || return
     printf 'hold\n' >"$STATE_DIR/migrate-source.hold" || return
   else
-    rm -f /migration/source.cutover /migration/target.synced /migration/source.paused
-    # This release pauses its mint for the cutover. A source keeps serving
-    # after the handoff only when it sees this file.
-    printf 'pauses\n' >/migration/target.pauses || return
+    rm -f /migration/source.cutover /migration/target.synced /migration/source.paused \
+      /migration/source.stopped
+    if legacy_rebind_source; then
+      # Mint stays stopped until rebind.done. The source keeps serving
+      # only when target.pauses is present, so this handoff stops it.
+      # rebind.from is recorded before the hold, and both are synced,
+      # so a restart still knows which source this is.
+      from=$(rebind_from_measurement) || return
+      record_rebind_from "$from" || return
+      printf 'hold\n' >"$STATE_DIR/rebind.hold" || return
+      sync || return
+    else
+      # This release pauses its mint for the cutover. A source keeps serving
+      # after the handoff only when it sees this file.
+      printf 'pauses\n' >/migration/target.pauses || return
+    fi
   fi
   log "running zns-migrate target"
   /usr/local/bin/zns-migrate target \
@@ -940,7 +1146,30 @@ if grep -q ' /upgrade-next ' /proc/mounts; then
     sleep 5 || fatal "sleep failed"
   done
   log "migration target has the capsule"
+  if legacy_rebind_source || [ -f "$STATE_DIR/rebind.hold" ] \
+    || [ -f "$STATE_DIR/rebind.from" ] || [ -f "$STATE_DIR/rebind.done" ] \
+    || [ -f "$STATE_DIR/rebind.started" ]; then
+    record_finished_target || true
+    ticks=0
+    while [ ! -f "$STATE_DIR/migrate-target.done" ]; do
+      ticks=$((ticks + 1))
+      if [ "$ticks" -eq 1 ] || [ $((ticks % 12)) -eq 0 ]; then
+        log "waiting for the migration target to finish"
+      fi
+      watch_supervisor
+      sleep 5 || fatal "sleep failed"
+    done
+    run_rebind
+  fi
 else
+  # No target mounts. A finished rebind drops its hold. A started run is
+  # not repeated. A run that has not started stays held until a target boot.
+  if [ -f "$STATE_DIR/rebind.done" ] || [ -f "$STATE_DIR/rebind.started" ]; then
+    run_rebind
+  elif [ -f "$STATE_DIR/rebind.hold" ] || [ -f "$STATE_DIR/rebind.from" ]; then
+    rebind_hold
+    log "rebind has not finished; mint stays stopped"
+  fi
 log "running keygen"
 log "keygen output is in $STATE_DIR/log/keygen.log"
 start_keygen

@@ -1,9 +1,11 @@
 # Pinned inputs for the measured guest. zns-mint, zns-keygen, zns-migrate,
-# and zns-canon are one workspace in mint_repo. Its Cargo.lock at
+# zns-rebind, and zns-canon are one workspace in mint_repo. Its Cargo.lock at
 # mint_commit is what `cargo build --locked` compiles.
 
 mint_repo = "https://github.com/zcashme/zns-mint.git"
-mint_commit = "9178590fe91a79d009f27e6a5b6132c57accd656"
+# zns-rebind in this commit moves every live name onto a bound Name Note.
+# The access-code purpose in this commit is zns-access-code-v1.
+mint_commit = "99fe61698a7e9d91d66a3b940e1acdd9f09dd5c0"
 
 zebra_repo = "https://github.com/ZcashFoundation/zebra.git"
 zebra_commit = "e8db87eb69254e0d4eedd058eadd48bdfa09065a"

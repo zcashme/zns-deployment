@@ -6,10 +6,12 @@
 //! check is succeeding and the ceremony is complete. A migrate-source.hold
 //! file keeps mint stopped. The source guest writes it before unsealing. A
 //! move to another release removes it after the seed is passed, then writes
-//! it again when the target guest has paused its mint. /run/mint-paused means
-//! this guest stopped mint after the wallet scan. The supervisor leaves that
-//! process alone until the file is gone. A same-release backup removes the
-//! hold after the receipt is accepted. /run/backup-stopping keeps mint stopped
+//! it again when the target guest has paused its mint. rebind.hold is a
+//! separate hold: the rebind target writes it before the seed arrives and
+//! removes it after rebind.done. /run/mint-paused means this guest stopped
+//! mint after the wallet scan. The supervisor leaves that
+//! process alone until the file is gone. A same-release backup removes
+//! migrate-source.hold after the receipt is accepted. /run/backup-stopping keeps mint stopped
 //! as well. The backup guest writes that file before removing the hold and
 //! powering off. The file is on tmpfs, so the next boot does not have it.
 
@@ -35,6 +37,7 @@ const LOGS: &[&str] = &[
     "/state/log/supervisor.log",
     "/state/log/keygen.log",
     "/state/log/migrate.log",
+    "/state/log/rebind.log",
 ];
 const WNOHANG: i32 = 1;
 const SIGTERM: i32 = 15;
@@ -44,6 +47,7 @@ const ZEBRA: &str = "/usr/local/bin/zebrad";
 const MINT: &str = "/usr/local/bin/zns-mint";
 const FORWARD: &str = "/usr/local/bin/zns-forward";
 const MIGRATE_HOLD: &str = "/state/migrate-source.hold";
+const REBIND_HOLD: &str = "/state/rebind.hold";
 const MINT_PAUSED: &str = "/run/mint-paused";
 const BACKUP_STOPPING: &str = "/run/backup-stopping";
 
@@ -264,7 +268,9 @@ fn ceremony_complete() -> bool {
 }
 
 fn migration_holds_mint() -> bool {
-    std::fs::metadata(MIGRATE_HOLD).is_ok() || std::fs::metadata(BACKUP_STOPPING).is_ok()
+    std::fs::metadata(MIGRATE_HOLD).is_ok()
+        || std::fs::metadata(REBIND_HOLD).is_ok()
+        || std::fs::metadata(BACKUP_STOPPING).is_ok()
 }
 
 fn mint_paused() -> bool {
