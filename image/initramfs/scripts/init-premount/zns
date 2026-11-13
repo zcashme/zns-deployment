@@ -706,6 +706,39 @@ cutover_pending() {
   return 0
 }
 
+# The capsule, the custody manifest, and the attestation are committed
+# together. The receipt pair is published after that commit and before
+# zns-migrate target returns. Those five files are a finished handoff.
+target_handoff_complete() {
+  [ -s "$STATE_DIR/keys/zns_seed.capsule" ] || return 1
+  [ -s "$STATE_DIR/keys/zns_custody_manifest.toml" ] || return 1
+  [ -s "$STATE_DIR/keys/zns_attestation.bin" ] || return 1
+  [ -s /migration/receipt.bin ] || return 1
+  [ -s /migration/receipt_attestation.bin ] || return 1
+}
+
+# migrate-target.done is this shell's record of a published receipt.
+# The receipt pair plus the three committed files are enough to write it
+# when the marker is absent. The upgrade document supplies the artifact line.
+record_finished_target() {
+  [ -f "$STATE_DIR/migrate-target.done" ] && return 0
+  target_handoff_complete || return 1
+  doc=""
+  if [ -f /run/zns-upgrade/upgrade.toml ]; then
+    doc=/run/zns-upgrade
+  elif [ -f /upgrade/upgrade.toml ]; then
+    doc=/upgrade
+  else
+    return 1
+  fi
+  artifact="$(artifact_line "$doc")"
+  [ -n "$artifact" ] || return 1
+  printf '%s\n' "$artifact" >"$STATE_DIR/migrate-target.done" ||
+    fatal "could not write migrate-target.done"
+  sync || fatal "could not sync migrate-target.done"
+  log "migration target finished"
+}
+
 watch_target() {
   if [ -f "$STATE_DIR/migrate-target.done" ]; then
     return 0
@@ -1106,6 +1139,7 @@ if grep -q ' /upgrade-next ' /proc/mounts; then
   if legacy_rebind_source || [ -f "$STATE_DIR/rebind.hold" ] \
     || [ -f "$STATE_DIR/rebind.from" ] || [ -f "$STATE_DIR/rebind.done" ] \
     || [ -f "$STATE_DIR/rebind.started" ]; then
+    record_finished_target || true
     ticks=0
     while [ ! -f "$STATE_DIR/migrate-target.done" ]; do
       ticks=$((ticks + 1))
