@@ -433,7 +433,9 @@ if [[ -z "$release" ]]; then
   release="$(git -C "$ROOT" describe --tags --exact-match 2>/dev/null || true)"
 fi
 printf '%s\n' "$release" >"$STAGE/etc/zns-release"
-# The guest runs zns-rebind when this file is in the image.
+# A cross-release target of this image runs zns-rebind. No old-format
+# names on that chain means the manifest migrate installed is already the
+# one the mint reads, and mint starts.
 printf '%s\n' "$MINT_COMMIT" >"$STAGE/etc/zns-rebind-once"
 if [[ -z "$release" ]]; then
   echo "no release tag; the guest will not name a release on the console" >&2

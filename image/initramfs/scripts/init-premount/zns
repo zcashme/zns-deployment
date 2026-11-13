@@ -210,27 +210,54 @@ watch_supervisor() {
   start_supervisor
 }
 
-# One run on a migration target. rebind.done means the manifest birthday
-# is the anchor block. rebind.started without rebind.done keeps the hold:
-# rebind is not started again.
+# rebind.hold stops mint until this disk's rebind result is recorded.
+# migrate-source.hold belongs to a cutover and is left in place.
+rebind_hold() {
+  [ -f "$STATE_DIR/rebind.hold" ] && return 0
+  printf 'hold\n' >"$STATE_DIR/rebind.hold" || fatal "could not write the rebind hold"
+}
+
+rebind_release() {
+  rm -f "$STATE_DIR/rebind.hold" || fatal "could not clear the rebind hold"
+}
+
+# The chain has no old-format names, and this run sent nothing.
+rebind_found_nothing() {
+  [ -f "$STATE_DIR/log/rebind.log" ] || return 1
+  grep -q 'refusing to move an empty registry' "$STATE_DIR/log/rebind.log" || return 1
+  grep -q 'rebind: anchor transaction sent' "$STATE_DIR/log/rebind.log" && return 1
+  return 0
+}
+
+rebind_record_done() {
+  printf 'done\n' >"$STATE_DIR/rebind.done" || fatal "could not write rebind.done"
+  sync || fatal "could not sync rebind.done"
+  rebind_release
+}
+
+# One run on a migration target. rebind.done means the manifest the mint
+# reads is settled: rewritten to the anchor block, or already bound.
+# rebind.started without rebind.done keeps rebind.hold. Rebind is not
+# started again.
 run_rebind() {
   [ -f /etc/zns-rebind-once ] || return 0
   [ -f /run/backup-target ] && return 0
   if [ -f "$STATE_DIR/rebind.done" ]; then
-    rm -f "$STATE_DIR/migrate-source.hold" || fatal "could not clear the mint hold"
+    rebind_release
     log "rebind already finished"
     return 0
   fi
   if [ -f "$STATE_DIR/rebind.started" ]; then
-    if [ ! -f "$STATE_DIR/migrate-source.hold" ]; then
-      printf 'hold\n' >"$STATE_DIR/migrate-source.hold" || fatal "could not write the mint hold"
+    if rebind_found_nothing; then
+      rebind_record_done
+      log "no old-format names; mint can start"
+      return 0
     fi
+    rebind_hold
     log "rebind did not finish; mint stays stopped"
     return 0
   fi
-  if [ ! -f "$STATE_DIR/migrate-source.hold" ]; then
-    printf 'hold\n' >"$STATE_DIR/migrate-source.hold" || fatal "could not write the mint hold"
-  fi
+  rebind_hold
   ticks=0
   while [ ! -f /migration/source.paused ]; do
     ticks=$((ticks + 1))
@@ -246,12 +273,15 @@ run_rebind() {
   status=0
   /usr/local/bin/zns-rebind >>"$STATE_DIR/log/rebind.log" 2>&1 || status=$?
   if [ "$status" -ne 0 ]; then
+    if rebind_found_nothing; then
+      rebind_record_done
+      log "no old-format names; mint can start"
+      return 0
+    fi
     log "rebind failed ($status); mint stays stopped"
     return 0
   fi
-  printf 'done\n' >"$STATE_DIR/rebind.done" || fatal "could not write rebind.done"
-  sync || fatal "could not sync rebind.done"
-  rm -f "$STATE_DIR/migrate-source.hold" || fatal "could not clear the mint hold"
+  rebind_record_done
   log "rebind finished; mint can start"
 }
 
@@ -459,6 +489,13 @@ ceremony_complete() {
 
 source_allowed() {
   [ -f "$STATE_DIR/keys/zns_seed.capsule" ] || return 1
+  # A migration target hands its manifest onward only after rebind settles
+  # it. Genesis has no migrate-target.done. A same-release backup powers off
+  # instead of handing the capsule on.
+  if [ -f /etc/zns-rebind-once ] && [ -f "$STATE_DIR/migrate-target.done" ] \
+    && [ ! -f "$STATE_DIR/rebind.done" ] && [ ! -f /run/backup-target ]; then
+    return 1
+  fi
   if ceremony_complete; then
     return 0
   fi
@@ -638,7 +675,7 @@ watch_target() {
     if [ -f /etc/zns-rebind-once ]; then
       # Mint stays stopped until rebind.done. The source keeps serving
       # only when target.pauses is present, so this handoff stops it.
-      printf 'hold\n' >"$STATE_DIR/migrate-source.hold" || return
+      printf 'hold\n' >"$STATE_DIR/rebind.hold" || return
     else
       # This release pauses its mint for the cutover. A source keeps serving
       # after the handoff only when it sees this file.
