@@ -3,9 +3,10 @@
 # mint_commit is what `cargo build --locked` compiles.
 
 mint_repo = "https://github.com/zcashme/zns-mint.git"
-# zns-rebind in this commit moves every live name onto a bound Name Note.
+# zns-rebind in this commit moves every live name onto a bound Name Note,
+# reading blocks 3 deep and building each transaction at the tip it has read.
 # The access-code purpose in this commit is zns-access-code-v1.
-mint_commit = "99fe61698a7e9d91d66a3b940e1acdd9f09dd5c0"
+mint_commit = "67555b9e8dac01d455e96d97efa19f26967c67ab"
 
 zebra_repo = "https://github.com/ZcashFoundation/zebra.git"
 zebra_commit = "e8db87eb69254e0d4eedd058eadd48bdfa09065a"
