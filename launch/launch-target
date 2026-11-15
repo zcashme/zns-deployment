@@ -162,6 +162,11 @@ runner="$hops/logs/${to}.launch"
   printf 'export ZNS_MINT_FWD=%q\n' "$mint_fwd"
   printf 'export ZNS_ZEBRA_FWD=%q\n' "$zebra_fwd"
   printf 'export ZNS_9P=%q\n' "upgrade|${upgrade}|ro;transport|${transport}|rw;upgrade-next|${hops}/upgrade-from-${to}|ro;transport-next|${hops}/transport-from-${to}|rw"
+  for var in KERNEL OVMF MEM; do
+    if [[ -n "${!var:-}" ]]; then
+      printf 'export %s=%q\n' "$var" "${!var}"
+    fi
+  done
   printf 'exec %q\n' "$HERE/launch-guest.sh"
 } >"$runner"
 chmod 755 "$runner"
