@@ -1,7 +1,8 @@
 //! Keep Zebra, mint, and the metrics forwarder running.
 //!
-//! Restart a process that has exited. After Zebra has passed /ready, or mint
-//! has passed /metrics, restart that process once three checks fail. Leave
+//! Restart a process that has exited. After Zebra has passed /ready, restart
+//! it once /ready goes unanswered three checks in a row. After mint has
+//! passed /metrics, restart it once three checks fail. Leave
 //! Zebra alone during its first sync. Start mint only while Zebra's /ready
 //! check is succeeding and the ceremony is complete. A migrate-source.hold
 //! file keeps mint stopped. The source guest writes it before unsealing. A
@@ -239,26 +240,22 @@ fn spawn(log_path: &str, workdir: Option<&str>, args: &[&str]) {
     }
 }
 
-fn http_ok(port: u16, path: &str) -> bool {
+/// The HTTP status `path` answers with, or `None` when nothing answers.
+fn http_status(port: u16, path: &str) -> Option<u16> {
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
-    let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_secs(2)) else {
-        return false;
-    };
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(2)).ok()?;
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
     let req = format!("GET {path} HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
-    if stream.write_all(req.as_bytes()).is_err() {
-        return false;
-    }
+    stream.write_all(req.as_bytes()).ok()?;
     let mut buf = [0u8; 64];
-    let Ok(n) = stream.read(&mut buf) else {
-        return false;
-    };
-    if n < 12 {
-        return false;
-    }
+    let n = stream.read(&mut buf).ok()?;
     let head = &buf[..n];
-    head.starts_with(b"HTTP/1.0 200") || head.starts_with(b"HTTP/1.1 200")
+    let code = head
+        .strip_prefix(b"HTTP/1.0 ")
+        .or_else(|| head.strip_prefix(b"HTTP/1.1 "))?
+        .get(..3)?;
+    std::str::from_utf8(code).ok()?.parse().ok()
 }
 
 fn ceremony_complete() -> bool {
@@ -309,7 +306,7 @@ impl Watch {
             spawn("/state/log/mint.log", Some("/state"), &[MINT]);
             return;
         };
-        if http_ok(9464, "/metrics") {
+        if http_status(9464, "/metrics") == Some(200) {
             if !self.mint_ready {
                 log_msg("mint metrics are up");
             }
@@ -349,7 +346,8 @@ impl Watch {
             );
             return;
         };
-        if http_ok(8080, "/ready") {
+        let ready = http_status(8080, "/ready");
+        if ready == Some(200) {
             if !self.zebra_seen_ready {
                 log_msg("zebra is ready");
             }
@@ -363,10 +361,10 @@ impl Watch {
         if !self.zebra_seen_ready {
             return;
         }
-        // /ready also requires a recent chain tip. /healthy only checks that
-        // peers are connected. A stale tip is not a reason to restart Zebra.
-        // Mint stays stopped until /ready succeeds.
-        if http_ok(8080, "/healthy") {
+        // Any answer means zebrad is working. A 503 is a stale tip, a sync, or
+        // no peers, and restarting Zebra creates neither a block nor a
+        // network. Mint stays stopped until /ready succeeds.
+        if ready.is_some() {
             self.zebra_misses = 0;
             return;
         }
@@ -374,7 +372,7 @@ impl Watch {
         if self.zebra_misses < FAIL_LIMIT {
             return;
         }
-        log_msg("zebra is not healthy, restarting zebra and mint");
+        log_msg("zebra is not answering, restarting zebra and mint");
         stop_pid(pid);
         if let Some(mint) = living_pid(MINT) {
             stop_pid(mint);
