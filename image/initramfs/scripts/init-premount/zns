@@ -356,9 +356,21 @@ run_rebind() {
   log "running rebind"
   printf 'started\n' >"$STATE_DIR/rebind.started" || fatal "could not write rebind.started"
   sync || fatal "could not sync rebind.started"
+  /usr/local/bin/zns-rebind >>"$STATE_DIR/log/rebind.log" 2>&1 &
+  rebind_pid=$!
+  ticks=0
+  while alive "$rebind_pid"; do
+    ticks=$((ticks + 1))
+    if [ $((ticks % 12)) -eq 0 ]; then
+      log "rebind.log: $(tail -n 1 "$STATE_DIR/log/rebind.log" 2>/dev/null || true)"
+    fi
+    watch_supervisor
+    sleep 5 || fatal "sleep failed"
+  done
   status=0
-  /usr/local/bin/zns-rebind >>"$STATE_DIR/log/rebind.log" 2>&1 || status=$?
+  wait "$rebind_pid" || status=$?
   if [ "$status" -ne 0 ]; then
+    tail -n 20 "$STATE_DIR/log/rebind.log" 2>/dev/null || true
     log "rebind failed ($status); mint stays stopped"
     return 0
   fi
