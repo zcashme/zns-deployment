@@ -248,9 +248,9 @@ fn http_status(port: u16, path: &str) -> Option<u16> {
     let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
     let req = format!("GET {path} HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
     stream.write_all(req.as_bytes()).ok()?;
-    let mut buf = [0u8; 64];
-    let n = stream.read(&mut buf).ok()?;
-    let head = &buf[..n];
+    // "HTTP/1.1 200": the status line through its code.
+    let mut head = [0u8; 12];
+    stream.read_exact(&mut head).ok()?;
     let code = head
         .strip_prefix(b"HTTP/1.0 ")
         .or_else(|| head.strip_prefix(b"HTTP/1.1 "))?
@@ -361,9 +361,9 @@ impl Watch {
         if !self.zebra_seen_ready {
             return;
         }
-        // Any answer means zebrad is working. A 503 is a stale tip, a sync, or
-        // no peers, and restarting Zebra creates neither a block nor a
-        // network. Mint stays stopped until /ready succeeds.
+        // Any answer means zebrad is up. A 503 is a stale tip, a sync, or no
+        // peers, and restarting Zebra creates neither a block nor a network.
+        // A stopped mint starts again only once /ready answers 200.
         if ready.is_some() {
             self.zebra_misses = 0;
             return;
