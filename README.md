@@ -160,12 +160,12 @@ mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/authorized_keys && chmod 600
 grep -qF '<the ssh-ed25519 line>' ~/.ssh/authorized_keys || echo '<the ssh-ed25519 line>' >> ~/.ssh/authorized_keys
 sudo chown "$(id -un):$(id -gn)" "$hops/transport-from-$tag" && sudo chmod 700 "$hops/transport-from-$tag"
 find "$hops/upgrade-from-$tag" "$hops/transport-from-$tag" -mindepth 1   # must print nothing
-pgrep -a qemu-system-x86_64 | while read -r pid args; do
-  echo "$pid $(grep -o -- '-name [^ ]*' <<<"$args") $(grep -o 'id=fs[01],path=[^,]*' <<<"$args" | tr '\n' ' ')"
+pgrep -af qemu-system-x86_64 | while read -r pid args; do
+  echo "$pid $(grep -o -- '-name [^ ]*' <<<"$args") $(grep -o 'id=fs[0-3],path=[^,]*' <<<"$args" | tr '\n' ' ')"
 done
 ```
 
-The last command prints each running guest with its first two 9p mounts. The live guest's line must show `id=fs0,path=…/upgrade-from-<tag>` and `id=fs1,path=…/transport-from-<tag>`. The path can be spelled through a different directory than `$hops` when that directory is a symlink. A guest that just finished `migrate` has the previous tag's directories as `fs0` and `fs1`, and this tag's only as its next hop. Start it on this tag first.
+The last command prints each running guest with its 9p mounts. The live guest's line must name `upgrade-from-<tag>` and `transport-from-<tag>`, either as `fs0` and `fs1` (started on this tag with `launch-genesis`) or as `fs2` and `fs3` (booted into this tag by `migrate`; the guest watches its next hop). The path can be spelled through a different directory than `$hops` when that directory is a symlink. A live guest whose line names neither pair has to be started on this tag first, which takes the mint down.
 
 3. On the live host, read the mint metrics at the mint port on the last line of `$hops/logs/<tag>.ports`. Mainnet is `9465` or `19465`. Testnet is `10465` or `20465`. `zns_mint_guest_info` carries `measurement` and `guest_policy`. `zns_mint_ceremony_info` carries `seed_fingerprint` and `capsule_hash`.
 
