@@ -7,8 +7,8 @@
 //! file keeps mint stopped. The source guest writes it before unsealing. A
 //! move to another release removes it after the seed is passed, then writes
 //! it again when the target guest has paused its mint. rebind.hold is a
-//! separate hold: the rebind target writes it before the seed arrives and
-//! removes it after rebind.done. /run/mint-paused means this guest stopped
+//! separate hold left on a disk whose rebind started and never finished. No
+//! release writes it any more. /run/mint-paused means this guest stopped
 //! mint after the wallet scan. The supervisor leaves that
 //! process alone until the file is gone. A same-release backup removes
 //! migrate-source.hold after the receipt is accepted. /run/backup-stopping keeps mint stopped
@@ -37,7 +37,6 @@ const LOGS: &[&str] = &[
     "/state/log/supervisor.log",
     "/state/log/keygen.log",
     "/state/log/migrate.log",
-    "/state/log/rebind.log",
 ];
 const WNOHANG: i32 = 1;
 const SIGTERM: i32 = 15;
