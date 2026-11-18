@@ -129,7 +129,7 @@ There is no command for this. The steps below are typed by hand on two machines.
 
 ### Steps
 
-Each block is pasted on its own. A command that fails does not stop the lines after it, so read each block's output before pasting the next.
+Each block is pasted on its own. A command that fails does not stop the lines after it unless the block chains them with `&&`, so read each block's output before pasting the next. A check marked "must print nothing" passes only when it prints nothing.
 
 On each machine, set these first, in the shell you paste the steps into. `base` is the hops directory the launch commands use on that machine: `$ZNS_HOPS` when it is set, otherwise `~/zns-hops`. Every `sudo` line passes it on, because `sudo` drops it otherwise.
 
@@ -137,7 +137,12 @@ On each machine, set these first, in the shell you paste the steps into. `base` 
 net=testnet tag=vX.Y.Z
 base="${ZNS_HOPS:-$HOME/zns-hops}"
 hops="$base/$net"
-ls "$hops/current"   # must exist on the live machine
+```
+
+On the live machine, `tag` must be the live release:
+
+```bash
+[ "$(cat "$hops/current")" = "$tag" ] && echo "current is $tag" || echo "STOP: current is not $tag"
 ```
 
 1. On the standby machine, from this tag: `sudo ./launch/prepare-host`. Sign in to GitHub. Create the account's SSH key if it has none, and print it:
@@ -150,37 +155,47 @@ cat ~/.ssh/id_ed25519.pub
 2. On the live machine, as the account the standby logs in as, authorize that line. Then give that account the live transport directory. Root QEMU writes its handshake files as 0644, and only that account and root can enter the directory. The upgrade directory stays owned by root.
 
 ```bash
-mkdir -p ~/.ssh && chmod 700 ~/.ssh
-echo '<the ssh-ed25519 line>' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys
+mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys
+[ -z "$(tail -c 1 ~/.ssh/authorized_keys)" ] || echo >> ~/.ssh/authorized_keys
+grep -qF '<the ssh-ed25519 line>' ~/.ssh/authorized_keys || echo '<the ssh-ed25519 line>' >> ~/.ssh/authorized_keys
 sudo chown "$(id -un):$(id -gn)" "$hops/transport-from-$tag" && sudo chmod 700 "$hops/transport-from-$tag"
-ls -A "$hops/upgrade-from-$tag" "$hops/transport-from-$tag"   # both must print nothing
-pgrep -af qemu-system-x86_64 | grep -o 'path=[^,]*'
+find "$hops/upgrade-from-$tag" "$hops/transport-from-$tag" -mindepth 1   # must print nothing
+pgrep -a qemu-system-x86_64 | while read -r pid args; do
+  echo "$pid $(grep -o -- '-name [^ ]*' <<<"$args") $(grep -o 'id=fs[01],path=[^,]*' <<<"$args" | tr '\n' ' ')"
+done
 ```
 
-The live guest has to be one started on this tag. The last command lists the mounts of every running guest. One guest's list must name `upgrade-from-<tag>` and `transport-from-<tag>`. Its path can be spelled through a different directory than `$hops` when that directory is a symlink. A guest that just finished `migrate` is still mounted on the previous tag's directories. Start it on this tag first.
+The last command prints each running guest with its first two 9p mounts. The live guest's line must show `id=fs0,path=…/upgrade-from-<tag>` and `id=fs1,path=…/transport-from-<tag>`. The path can be spelled through a different directory than `$hops` when that directory is a symlink. A guest that just finished `migrate` has the previous tag's directories as `fs0` and `fs1`, and this tag's only as its next hop. Start it on this tag first.
 
 3. On the live host, read the mint metrics at the mint port on the last line of `$hops/logs/<tag>.ports`. Mainnet is `9465` or `19465`. Testnet is `10465` or `20465`. `zns_mint_guest_info` carries `measurement` and `guest_policy`. `zns_mint_ceremony_info` carries `seed_fingerprint` and `capsule_hash`.
 
 4. Run the Release workflow on this tag. Set `network` to this host's network. Set `from_measurement` to that `measurement` and `from_guest_policy` to that `guest_policy`. Set `seed_fingerprint` and `source_capsule_hash` to those labels. Set `sequence` to an integer this release has not used. The workflow packs `zns-<network>-backup.bin` for the initrd this tag already published. Wait until that file is on the release.
 
-5. On the standby machine, mount the live directories over SSH. `live_hops` is the live machine's `$hops`, as that machine prints it. `/etc/fuse.conf` needs `user_allow_other`, which `prepare-host` writes.
+5. On the standby machine, confirm the live host's SSH key once, then mount the live directories over SSH. `live_hops` is the live machine's `$hops`, as that machine prints it. `/etc/fuse.conf` needs `user_allow_other`, which `prepare-host` writes.
 
 ```bash
 live=ubuntu@<live-host> live_hops=<the live machine's $hops>
+ssh "$live" true
+```
+
+```bash
 m="$hops/backup-mount/$tag"
 mkdir -p "$m/upgrade" "$m/transport" && chmod 700 "$hops/backup-mount" "$m"
 o=cache=no,attr_timeout=0,entry_timeout=0,allow_other,default_permissions,ServerAliveInterval=15
 sshfs -o "$o" "$live:$live_hops/upgrade-from-$tag" "$m/upgrade"
 sshfs -o "$o" "$live:$live_hops/transport-from-$tag" "$m/transport"
-touch "$m/transport/.probe" && rm "$m/transport/.probe"
-ls -A "$m/upgrade" "$m/transport"   # both must print nothing
+mountpoint -q "$m/upgrade" && mountpoint -q "$m/transport" && echo mounted || echo "STOP: not mounted"
+mountpoint -q "$m/transport" && touch "$m/transport/.probe" && rm "$m/transport/.probe" && echo writable
+find "$m/upgrade" "$m/transport" -mindepth 1   # must print nothing
 ```
 
-6. On the standby machine, check that neither disk exists yet. This prints nothing when the step may go on.
+The block must print `mounted` and `writable`.
+
+6. On the standby machine, check that no disk for this backup exists yet.
 
 ```bash
 d="$hops/images/$tag"
-ls -l "$d/backup-zns-state.img" "$d/zebra-state.img" 2>/dev/null
+ls -l "$d/backup-zns-state.img" "$d/backup-zebra-state.img" "$d/zebra-state.img" 2>/dev/null   # must print nothing
 ```
 
 When it prints a disk, stop here. Do not delete or reuse it. A ZNS disk there may already hold the seed: see rule 2. Ask first.
@@ -188,39 +203,44 @@ When it prints a disk, stop here. Do not delete or reuse it. A ZNS disk there ma
 7. On the standby machine, fetch the release and create the two disks.
 
 ```bash
-sudo ZNS_HOPS="$base" ZNS_NETWORK=$net ./launch/fetch-release "$tag"
-sudo truncate -s 4G "$d/backup-zns-state.img" && sudo mkfs.ext4 -q "$d/backup-zns-state.img"
-sudo ZNS_HOPS="$base" ZNS_NETWORK=$net ./launch/install-zebra-snapshot "$tag"
-sudo mv -n "$d/zebra-state.img" "$d/backup-zebra-state.img"
+sudo ZNS_HOPS="$base" ZNS_NETWORK=$net ./launch/fetch-release "$tag" &&
+sudo truncate -s 4G "$d/backup-zns-state.img" && sudo mkfs.ext4 -q "$d/backup-zns-state.img" &&
+sudo ZNS_HOPS="$base" ZNS_NETWORK=$net ./launch/install-zebra-snapshot "$tag" &&
+sudo mv -n "$d/zebra-state.img" "$d/backup-zebra-state.img" &&
+ls -l "$d/backup-zns-state.img" "$d/backup-zebra-state.img"
 ```
 
-`mkfs.ext4` without `-F` asks before it formats a file that already holds a file system. Answer no and stop.
+`mkfs.ext4` without `-F` asks before it formats a file that already holds a file system. Answer no and stop. The last line must list both disks.
 
-8. On the standby machine, start the guest and leave it waiting. The two `backup-next` directories are empty and stay empty. Mainnet's backup ports are `29465` and `29999`. Testnet's are `30465` and `30999`.
+8. On the standby machine, start the guest and leave it waiting. The two `backup-next` directories are empty and stay empty. Mainnet's backup ports are `29465` and `29999`. Testnet's are `30465` and `30999`. `MEM`, `KERNEL`, and `OVMF` are passed on when they are set in this shell.
 
 ```bash
 case $net in mainnet) mp=29465 zp=29999 ;; testnet) mp=30465 zp=30999 ;; esac
-n="$hops/backup-next/$tag"
-mkdir -p "$n/upgrade" "$n/transport" "$hops/logs"
-tmux new-session -d -s zns-$net-backup "sudo env \
+n="$hops/backup-next/$tag" c="$hops/logs/backup-$tag.console"
+mkdir -p "$n/upgrade" "$n/transport" "$hops/logs" && touch "$c"
+extra=""; for v in MEM KERNEL OVMF; do [ -n "${!v:-}" ] && extra="$extra $v=${!v}"; done
+sudo -n true && echo "sudo ok" || echo "STOP: this account needs passwordless sudo (prepare-host sets it)"
+tmux new-session -d -s zns-$net-backup "sudo -n env$extra \
   ZNS_STATE_IMG=$d/backup-zns-state.img ZEBRA_STATE_IMG=$d/backup-zebra-state.img \
   INITRD=$d/release/zns-initrd.img ZNS_QEMU_NAME=zns-$net-backup \
   ZNS_MINT_FWD=$mp ZNS_ZEBRA_FWD=$zp \
   ZNS_9P='upgrade|$m/upgrade|ro;transport|$m/transport|rw;upgrade-next|$n/upgrade|ro;transport-next|$n/transport|rw' \
-  $PWD/launch/launch-guest.sh"
-tmux pipe-pane -t zns-$net-backup "cat >> $hops/logs/backup-$tag.console"
+  $PWD/launch/launch-guest.sh" \; pipe-pane -t zns-$net-backup "cat >> $c"
+sleep 5; pgrep -f -- "-name zns-$net-backup -nographic" >/dev/null && echo "guest running" || { echo "STOP: guest exited"; tail -n 40 "$c"; }
 ```
 
-Wait until the console shows `migration watch started`.
+The block must print `sudo ok` and `guest running`. Then wait until `$c` shows `migration watch started`.
 
-9. On the live machine, put the backup document in the live guest's upgrade directory. `fetch-release` checks its attestation and refuses one whose two measurements differ. `upgrade.bin` is copied last, because the guest acts on it.
+9. On the live machine, put the backup document in the live guest's upgrade directory. `fetch-release` checks its attestation and refuses one whose two measurements differ. `upgrade.bin` is copied last, because the guest acts on it. The block stops at the first failure.
 
 ```bash
-sudo ZNS_HOPS="$base" ZNS_NETWORK=$net ./launch/fetch-release "$tag"
 r="$hops/images/$tag/release" u="$hops/upgrade-from-$tag"
-sudo cp "$r/backup.toml" "$u/upgrade.toml"
-sudo cp "$r/backup.bundle.jsonl" "$u/upgrade.bundle.jsonl"
-sudo cp "$r/backup.bin" "$u/upgrade.bin.partial" && sudo mv "$u/upgrade.bin.partial" "$u/upgrade.bin"
+sudo ZNS_HOPS="$base" ZNS_NETWORK=$net ./launch/fetch-release "$tag" &&
+test -s "$r/backup.bin" && test -s "$r/backup.toml" && test -s "$r/backup.bundle.jsonl" &&
+sudo cp "$r/backup.toml" "$u/upgrade.toml" &&
+sudo cp "$r/backup.bundle.jsonl" "$u/upgrade.bundle.jsonl" &&
+sudo cp "$r/backup.bin" "$u/upgrade.bin.partial" && sudo mv "$u/upgrade.bin.partial" "$u/upgrade.bin" &&
+echo "document in place"
 ```
 
 10. On the standby console, wait until it logs `migration target finished` and the guest stops. The capsule is on `backup-zns-state.img`, sealed to that machine. On the live console, mint stops for the handoff, then the log says `same-release backup accepted; mint hold cleared` and mint starts again.
@@ -228,9 +248,12 @@ sudo cp "$r/backup.bin" "$u/upgrade.bin.partial" && sudo mv "$u/upgrade.bin.part
 11. On the standby machine, close the session and unmount: `tmux kill-session -t zns-$net-backup; fusermount -u "$m/upgrade"; fusermount -u "$m/transport"`. On the live machine, once the live console says `Mint is up`, remove the backup document and the handshake files. The next backup and the next `migrate` from this tag need both directories empty.
 
 ```bash
-sudo rm -f "$hops/upgrade-from-$tag"/upgrade.toml "$hops/upgrade-from-$tag"/upgrade.bundle.jsonl "$hops/upgrade-from-$tag"/upgrade.bin
-sudo rm -f "$hops/transport-from-$tag"/{source.ready,offer.bin,attestation.bin,encrypted_seed.bin,source_attestation.bin,receipt.bin,receipt_attestation.bin,zns_custody_manifest.toml}
-ls -A "$hops/upgrade-from-$tag" "$hops/transport-from-$tag"   # both must print nothing
+u="$hops/upgrade-from-$tag" t="$hops/transport-from-$tag"
+sudo rm -f "$u/upgrade.toml" "$u/upgrade.bundle.jsonl" "$u/upgrade.bin"
+for f in source.ready offer.bin attestation.bin encrypted_seed.bin source_attestation.bin \
+  receipt.bin receipt_attestation.bin zns_custody_manifest.toml \
+  target.pauses source.cutover target.synced source.paused; do sudo rm -f "$t/$f"; done
+find "$u" "$t" -mindepth 1   # must print nothing
 ```
 
 If the live guest restarts during the handoff, its mint stays stopped. Do not remove files by hand to bring it back. Ask first.
