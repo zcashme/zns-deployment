@@ -369,10 +369,10 @@ write_current() {
   mv "$hops/current.next" "$hops/current"
 }
 
-# The standby account creates the handshake files over SSH. Root QEMU writes
-# the source side as mode 0644. The directory is mode 700 and owned by that
-# account, so that account can enter and read those files. Other accounts
-# cannot enter. The upgrade directory stays root-owned.
+# Root QEMU writes the handshake files as mode 0644. The directory is mode
+# 700 and owned by the operator, so only that account and root can enter it.
+# A backup standby logs in as that account over SSH (README, Backup). The
+# upgrade directory stays root-owned.
 open_transport_dir() {
   local dir="$1" owner="${2:-}" group
   mkdir -p "$dir"

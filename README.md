@@ -30,9 +30,6 @@ Memory size, the state disks, host port forwards, and 9p mounts are launch setti
 | `launch/launch-target` | Boot the target guest against the live hop |
 | `launch/migrate` | Fetch the release, boot the target, publish the upgrade, record the tag after `receipt.bin` |
 | `launch/prepare-host` | Install QEMU, sshfs, tmux, gh, and the pinned kernel and OVMF |
-| `launch/ssh-key-standby` | On the standby machine, create its backup SSH key and print the public key |
-| `launch/ssh-key-live` | On the live machine, authorize that standby public key |
-| `launch/backup` | Seal this release's capsule onto another machine and leave mint there stopped |
 | `.github/workflows/release.yml` | Build, measure, and attest each network; publish one release |
 
 Each network has its own directory under the hops directory, `zns-hops/mainnet` and `zns-hops/testnet`. `current` in that directory is the tag of the live guest for that network. It advances when a migration writes `receipt.bin`. A later `migrate` may name an older tag. The same directory holds that network's images, logs, snapshots, and upgrade and transport directories.
@@ -51,7 +48,7 @@ Every launch command takes `ZNS_NETWORK=mainnet` or `ZNS_NETWORK=testnet`. That 
 
 `Ctrl-a c` switches to the QEMU monitor. `quit` stops the VM, and `Ctrl-a c` returns to the guest. `Ctrl-a x` stops it directly. This is the host powering the VM off. The guest policy keeps that monitor from reading guest memory.
 
-Each network has two pairs of host ports. The guest itself listens on 9465 and 9998. Mainnet's pairs are mint `9465` with Zebra `9999`, and mint `19465` with Zebra `19999`. Testnet's pairs are mint `10465` with Zebra `10999`, and mint `20465` with Zebra `20999`. `launch-genesis` takes the low pair. Each migrate takes the other pair of that same network: the live guest keeps the forwards it was started with when its tmux session is renamed, so the next guest has to use the pair that is free. The launch command prints the pair, and appends a line to `logs/<tag>.ports` in that network's directory. The line is the role, `genesis`, `target`, or `backup`, then the mint port, the Zebra port, and the reason, which names the network. A later start of that tag adds another line. A backup guest stays on its own pair, mainnet `29465` and `29999`, testnet `30465` and `30999`. Set `ZNS_MINT_FWD` and `ZNS_ZEBRA_FWD` together to choose a pair by hand. A target guest starts in tmux session `zns-<network>-target`. Its console is also written to a log file.
+Each network has two pairs of host ports. The guest itself listens on 9465 and 9998. Mainnet's pairs are mint `9465` with Zebra `9999`, and mint `19465` with Zebra `19999`. Testnet's pairs are mint `10465` with Zebra `10999`, and mint `20465` with Zebra `20999`. `launch-genesis` takes the low pair. Each migrate takes the other pair of that same network: the live guest keeps the forwards it was started with when its tmux session is renamed, so the next guest has to use the pair that is free. The launch command prints the pair, and appends a line to `logs/<tag>.ports` in that network's directory. The line is the role, `genesis` or `target`, then the mint port, the Zebra port, and the reason, which names the network. A later start of that tag adds another line. A backup guest stays on its own pair, mainnet `29465` and `29999`, testnet `30465` and `30999`. Set `ZNS_MINT_FWD` and `ZNS_ZEBRA_FWD` together to choose a pair by hand. A target guest starts in tmux session `zns-<network>-target`. Its console is also written to a log file.
 
 ## Moving a guest
 
@@ -118,55 +115,158 @@ That installs QEMU, sshfs, tmux, gh, and the tools that format a disk and unpack
 
 ## Backup
 
-A backup seals this release's capsule onto another machine you own and then that guest stops. Both sides use this same release. The live mint stops for the handoff and starts again after the receipt. `current` stays on this release. The stopped disk is the copy. A later boot of this release on that machine opens the capsule.
+A backup puts a second copy of the seed on a machine in another data centre, so the mint can be brought back if the live machine is lost. It is a migration to this same release: the live guest hands the seed to a standby guest, which seals it to its own chip and powers off. The stopped disk is the copy. `current` does not change. The live mint stops for the handoff and starts again after the receipt.
 
-The live guest is one that was started on this tag, so it is mounted on `/home/ubuntu/zns-hops/<network>/upgrade-from-<tag>` and `transport-from-<tag>`. A guest that just finished `migrate` is still mounted on the previous tag's directories. Start it on this tag before a backup. The transport directory has no handshake files in it. When `publish` says it still has some, that handshake has finished, and those files are removed before `publish` is run again.
+There is no command for this. The steps below are typed by hand on two machines.
 
-1. On the standby machine, check out this same tag and run `sudo ./launch/prepare-host`. Signing in to GitHub is covered separately. Then print that machine's public key. The comment on the line is the standby hostname.
+### Rules
+
+1. Both machines check out this release's tag. The launch scripts must be the ones from the release the guests run.
+2. The standby ZNS disk is new and empty every time. A disk that holds `keys/zns_seed.capsule` starts a mint when it boots, also when it is booted as a backup target. Never boot such a disk while the live mint runs.
+3. Start the standby guest before the document reaches the live guest. The live mint stops as soon as it sees the document and waits up to 24 hours for the standby.
+4. Each backup needs its own document from the Release workflow, with a new `sequence`. The live guest treats a document it has already handed off as done.
+5. A backup disk keeps working after the live guest moves to a later release. It still holds the seed. Keep it powered off unless the live machine is gone.
+
+### Steps
+
+Each block is pasted on its own. A command that fails does not stop the lines after it unless the block chains them with `&&`, so read each block's output before pasting the next. A check marked "must print nothing" passes only when it prints nothing.
+
+On each machine, set these first, in the shell you paste the steps into. `base` is the hops directory the launch commands use on that machine: `$ZNS_HOPS` when it is set, otherwise `~/zns-hops`. Every `sudo` line passes it on, because `sudo` drops it otherwise.
 
 ```bash
-sudo ./launch/ssh-key-standby
+net=testnet tag=vX.Y.Z
+base="${ZNS_HOPS:-$HOME/zns-hops}"
+hops="$base/$net"
 ```
 
-2. On the live machine, install that line for the account the standby will log in as. That command also makes `transport-from-<current>` writable by that account. `stand` checks that it can create a file there.
+On the live machine, `tag` must be the live release:
 
 ```bash
-sudo ZNS_NETWORK=testnet ./launch/ssh-key-live '<the ssh-ed25519 line>'
+[ "$(cat "$hops/current")" = "$tag" ] && echo "current is $tag" || echo "STOP: current is not $tag"
 ```
 
-SSH from the standby account to the live host then succeeds. The first connection confirms the live host key. `stand` uses that same account.
-
-3. On the live host, read the mint metrics at the mint port on the last line of `logs/<tag>.ports`. Mainnet is `9465` or `19465`. Testnet is `10465` or `20465`.
-
-   `zns_mint_guest_info` carries `measurement` and `guest_policy`. `zns_mint_ceremony_info` carries `seed_fingerprint` and `capsule_hash`.
-
-4. Run the Release workflow on this tag. Set `network` to this host's network. Set `from_measurement` to that `measurement` and `from_guest_policy` to that `guest_policy`. Set `seed_fingerprint` and `source_capsule_hash` to those labels. Set `sequence` to the next integer, or `1` when this release has no upgrade document yet. The workflow packs `zns-<network>-backup.bin` for the initrd this tag already published. Wait until that file is on the release.
-
-5. On the standby machine, start the guest and leave it waiting. Replace the tag and the live host address.
+1. On the standby machine, from this tag: `sudo ./launch/prepare-host`. Sign in to GitHub. Create the account's SSH key if it has none, and print it:
 
 ```bash
-sudo ZNS_NETWORK=testnet ./launch/backup stand v0.1.x <live-host>
+test -f ~/.ssh/id_ed25519 || ssh-keygen -t ed25519 -N "" -C "zns-backup@$(hostname)" -f ~/.ssh/id_ed25519
+cat ~/.ssh/id_ed25519.pub
 ```
 
-The command mounts the live host's upgrade and transport directories for this network over SSH and boots the guest in tmux session `zns-<network>-backup`. A disk that already holds a capsule is refused, and that guest stays off. The console is `/home/ubuntu/zns-hops/<network>/logs/backup-<tag>.console`. Mainnet metrics are `127.0.0.1:29465/metrics` and `127.0.0.1:29999/metrics`. Testnet metrics are `127.0.0.1:30465/metrics` and `127.0.0.1:30999/metrics`. The ZNS disk is `/home/ubuntu/zns-hops/<network>/images/<tag>/backup-zns-state.img`. The Zebra disk is `backup-zebra-state.img` beside it, filled from a chain snapshot when that file is absent.
-
-6. On the live host, after that guest is up:
+2. On the live machine, as the account the standby logs in as, authorize that line. Then give that account the live transport directory. Root QEMU writes its handshake files as 0644, and only that account and root can enter the directory. The upgrade directory stays owned by root.
 
 ```bash
-sudo ZNS_NETWORK=testnet ./launch/backup publish
+mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys
+[ -z "$(tail -c 1 ~/.ssh/authorized_keys)" ] || echo >> ~/.ssh/authorized_keys
+grep -qF '<the ssh-ed25519 line>' ~/.ssh/authorized_keys || echo '<the ssh-ed25519 line>' >> ~/.ssh/authorized_keys
+sudo chown "$(id -un):$(id -gn)" "$hops/transport-from-$tag" && sudo chmod 700 "$hops/transport-from-$tag"
+find "$hops/upgrade-from-$tag" "$hops/transport-from-$tag" -mindepth 1   # must print nothing
+pgrep -a qemu-system-x86_64 | while read -r pid args; do
+  echo "$pid $(grep -o -- '-name [^ ]*' <<<"$args") $(grep -o 'id=fs[01],path=[^,]*' <<<"$args" | tr '\n' ' ')"
+done
 ```
 
-7. On the standby console, wait until it logs `migration target finished` and the guest stops. The capsule is on `backup-zns-state.img`, sealed to that machine. On the live console, mint stops for the handoff, then the log says `same-release backup accepted; mint hold cleared` and mint starts again.
+The last command prints each running guest with its first two 9p mounts. The live guest's line must show `id=fs0,path=…/upgrade-from-<tag>` and `id=fs1,path=…/transport-from-<tag>`. The path can be spelled through a different directory than `$hops` when that directory is a symlink. A guest that just finished `migrate` has the previous tag's directories as `fs0` and `fs1`, and this tag's only as its next hop. Start it on this tag first.
 
-A later release uses this same backup pair. Stop the previous backup guest before `stand` for the new tag, so those ports are free. The next `stand` takes them.
+3. On the live host, read the mint metrics at the mint port on the last line of `$hops/logs/<tag>.ports`. Mainnet is `9465` or `19465`. Testnet is `10465` or `20465`. `zns_mint_guest_info` carries `measurement` and `guest_policy`. `zns_mint_ceremony_info` carries `seed_fingerprint` and `capsule_hash`.
 
-To run this copy, stop the live guest and leave that session closed. On the backup machine, start this same release with those two disks:
+4. Run the Release workflow on this tag. Set `network` to this host's network. Set `from_measurement` to that `measurement` and `from_guest_policy` to that `guest_policy`. Set `seed_fingerprint` and `source_capsule_hash` to those labels. Set `sequence` to an integer this release has not used. The workflow packs `zns-<network>-backup.bin` for the initrd this tag already published. Wait until that file is on the release.
+
+5. On the standby machine, confirm the live host's SSH key once, then mount the live directories over SSH. `live_hops` is the live machine's `$hops`, as that machine prints it. `/etc/fuse.conf` needs `user_allow_other`, which `prepare-host` writes.
 
 ```bash
-sudo ZNS_NETWORK=testnet \
-  ZNS_STATE_IMG=/home/ubuntu/zns-hops/testnet/images/v0.1.x/backup-zns-state.img \
-  ZEBRA_STATE_IMG=/home/ubuntu/zns-hops/testnet/images/v0.1.x/backup-zebra-state.img \
-  ./launch/launch-genesis v0.1.x
+live=ubuntu@<live-host> live_hops=<the live machine's $hops>
+ssh "$live" true
+```
+
+```bash
+m="$hops/backup-mount/$tag"
+mkdir -p "$m/upgrade" "$m/transport" && chmod 700 "$hops/backup-mount" "$m"
+o=cache=no,attr_timeout=0,entry_timeout=0,allow_other,default_permissions,ServerAliveInterval=15
+sshfs -o "$o" "$live:$live_hops/upgrade-from-$tag" "$m/upgrade"
+sshfs -o "$o" "$live:$live_hops/transport-from-$tag" "$m/transport"
+mountpoint -q "$m/upgrade" && mountpoint -q "$m/transport" && echo mounted || echo "STOP: not mounted"
+mountpoint -q "$m/transport" && touch "$m/transport/.probe" && rm "$m/transport/.probe" && echo writable
+find "$m/upgrade" "$m/transport" -mindepth 1   # must print nothing
+```
+
+The block must print `mounted` and `writable`.
+
+6. On the standby machine, check that no disk for this backup exists yet.
+
+```bash
+d="$hops/images/$tag"
+ls -l "$d/backup-zns-state.img" "$d/backup-zebra-state.img" "$d/zebra-state.img" 2>/dev/null   # must print nothing
+```
+
+When it prints a disk, stop here. Do not delete or reuse it. A ZNS disk there may already hold the seed: see rule 2. Ask first.
+
+7. On the standby machine, fetch the release and create the two disks.
+
+```bash
+sudo ZNS_HOPS="$base" ZNS_NETWORK=$net ./launch/fetch-release "$tag" &&
+sudo truncate -s 4G "$d/backup-zns-state.img" && sudo mkfs.ext4 -q "$d/backup-zns-state.img" &&
+sudo ZNS_HOPS="$base" ZNS_NETWORK=$net ./launch/install-zebra-snapshot "$tag" &&
+sudo mv -n "$d/zebra-state.img" "$d/backup-zebra-state.img" &&
+ls -l "$d/backup-zns-state.img" "$d/backup-zebra-state.img"
+```
+
+`mkfs.ext4` without `-F` asks before it formats a file that already holds a file system. Answer no and stop. The last line must list both disks.
+
+8. On the standby machine, start the guest and leave it waiting. The two `backup-next` directories are empty and stay empty. Mainnet's backup ports are `29465` and `29999`. Testnet's are `30465` and `30999`. `MEM`, `KERNEL`, and `OVMF` are passed on when they are set in this shell.
+
+```bash
+case $net in mainnet) mp=29465 zp=29999 ;; testnet) mp=30465 zp=30999 ;; esac
+n="$hops/backup-next/$tag" c="$hops/logs/backup-$tag.console"
+mkdir -p "$n/upgrade" "$n/transport" "$hops/logs" && touch "$c"
+extra=""; for v in MEM KERNEL OVMF; do [ -n "${!v:-}" ] && extra="$extra $v=${!v}"; done
+sudo -n true && echo "sudo ok" || echo "STOP: this account needs passwordless sudo (prepare-host sets it)"
+tmux new-session -d -s zns-$net-backup "sudo -n env$extra \
+  ZNS_STATE_IMG=$d/backup-zns-state.img ZEBRA_STATE_IMG=$d/backup-zebra-state.img \
+  INITRD=$d/release/zns-initrd.img ZNS_QEMU_NAME=zns-$net-backup \
+  ZNS_MINT_FWD=$mp ZNS_ZEBRA_FWD=$zp \
+  ZNS_9P='upgrade|$m/upgrade|ro;transport|$m/transport|rw;upgrade-next|$n/upgrade|ro;transport-next|$n/transport|rw' \
+  $PWD/launch/launch-guest.sh" \; pipe-pane -t zns-$net-backup "cat >> $c"
+sleep 5; pgrep -f -- "-name zns-$net-backup -nographic" >/dev/null && echo "guest running" || { echo "STOP: guest exited"; tail -n 40 "$c"; }
+```
+
+The block must print `sudo ok` and `guest running`. Then wait until `$c` shows `migration watch started`.
+
+9. On the live machine, put the backup document in the live guest's upgrade directory. `fetch-release` checks its attestation and refuses one whose two measurements differ. `upgrade.bin` is copied last, because the guest acts on it. The block stops at the first failure.
+
+```bash
+r="$hops/images/$tag/release" u="$hops/upgrade-from-$tag"
+sudo ZNS_HOPS="$base" ZNS_NETWORK=$net ./launch/fetch-release "$tag" &&
+test -s "$r/backup.bin" && test -s "$r/backup.toml" && test -s "$r/backup.bundle.jsonl" &&
+sudo cp "$r/backup.toml" "$u/upgrade.toml" &&
+sudo cp "$r/backup.bundle.jsonl" "$u/upgrade.bundle.jsonl" &&
+sudo cp "$r/backup.bin" "$u/upgrade.bin.partial" && sudo mv "$u/upgrade.bin.partial" "$u/upgrade.bin" &&
+echo "document in place"
+```
+
+10. On the standby console, wait until it logs `migration target finished` and the guest stops. The capsule is on `backup-zns-state.img`, sealed to that machine. On the live console, mint stops for the handoff, then the log says `same-release backup accepted; mint hold cleared` and mint starts again.
+
+11. On the standby machine, close the session and unmount: `tmux kill-session -t zns-$net-backup; fusermount -u "$m/upgrade"; fusermount -u "$m/transport"`. On the live machine, once the live console says `Mint is up`, remove the backup document and the handshake files. The next backup and the next `migrate` from this tag need both directories empty.
+
+```bash
+u="$hops/upgrade-from-$tag" t="$hops/transport-from-$tag"
+sudo rm -f "$u/upgrade.toml" "$u/upgrade.bundle.jsonl" "$u/upgrade.bin"
+for f in source.ready offer.bin attestation.bin encrypted_seed.bin source_attestation.bin \
+  receipt.bin receipt_attestation.bin zns_custody_manifest.toml \
+  target.pauses source.cutover target.synced source.paused; do sudo rm -f "$t/$f"; done
+find "$u" "$t" -mindepth 1   # must print nothing
+```
+
+If the live guest restarts during the handoff, its mint stays stopped. Do not remove files by hand to bring it back. Ask first.
+
+### Using the copy
+
+Stop the live guest and leave that session closed. On the backup machine, set `net`, `tag`, `base`, and `hops` as at the start of the steps, then start this same release with those two disks:
+
+```bash
+d="$hops/images/$tag"
+sudo ZNS_HOPS="$base" ZNS_NETWORK=$net \
+  ZNS_STATE_IMG="$d/backup-zns-state.img" ZEBRA_STATE_IMG="$d/backup-zebra-state.img" \
+  ./launch/launch-genesis "$tag"
 ```
 
 That boot opens the capsule and starts mint. The live guest stays stopped, so one mint has the seed.
