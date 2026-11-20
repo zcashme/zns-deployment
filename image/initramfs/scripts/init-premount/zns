@@ -473,11 +473,11 @@ advance_cutover() {
   return 0
 }
 
-# zns_mint_serving appears once the wallet scan is finished: 0 before the run
-# loop, 1 after. Zebra sends the current tip to a new subscriber at once, so
-# the first pass starts at 1. That pass reads the price, the tip and the fee
-# rate and builds proofs before it submits anything, which takes seconds. The
-# 0.2s poll below stops mint well before that.
+# Mint answers /metrics once the wallet scan is finished. Zebra sends the
+# current tip to a new subscriber at once, so the first pass follows. That
+# pass reads the price and the tip and builds proofs before it submits
+# anything, which takes seconds. The 0.2s poll below stops mint well before
+# that.
 # This guest stops that process, publishes target.synced, and continues it
 # once source.paused is present. source.cutover means the source mint is
 # serving while this guest syncs.
@@ -521,16 +521,9 @@ pause_mint_for_cutover() {
     fi
     return 0
   fi
-  if ! wget -q -O /tmp/zns-mint-serving http://127.0.0.1:9464/metrics 2>/dev/null; then
+  if ! http_ok http://127.0.0.1:9464/metrics; then
     return 0
   fi
-  serving="$(metric_int /tmp/zns-mint-serving zns_mint_serving)"
-  # 0: the wallet scan is done. 1: the first pass has started and has
-  # seconds of reads and proving ahead of its first submit.
-  case "$serving" in
-    0 | 1) ;;
-    *) return 0 ;;
-  esac
   mint_pids="$(pidof zns-mint 2>/dev/null || true)"
   if [ -z "$mint_pids" ]; then
     return 0
