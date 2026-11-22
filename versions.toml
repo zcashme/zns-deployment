@@ -4,11 +4,11 @@
 
 mint_repo = "https://github.com/zcashme/zns-mint.git"
 # The access-code purpose in this commit is zns-access-code-v1.
-mint_commit = "34f8f989afa9e1b1ea5600bf48ca13763e0cd597"
+mint_commit = "ded9e7190c796ebbbe61c6e704bcae430d9e6760"
 
 zebra_repo = "https://github.com/ZcashFoundation/zebra.git"
-zebra_commit = "e8db87eb69254e0d4eedd058eadd48bdfa09065a"
-zebra_version = "7.0.0"
+zebra_commit = "534549fe6b4c851b4785515fd03380cbea9e1a23"
+zebra_version = "7.1.0"
 # DATABASE_FORMAT_VERSION in zebra-state. This build opens
 # state/v<zebra_db_format>/<network>.
 zebra_db_format = 29
