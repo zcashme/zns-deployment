@@ -2,7 +2,8 @@
 # copies the result into the guest at /etc/zebra/zebrad.toml.
 # The listeners match zns-mint and zns-keygen built for that network.
 # indexer_listen_addr requires zebrad built with --features indexer.
-# The indexer port is 8230 on mainnet and 18230 on testnet, matching what mint dials.
+# The indexer port is 8230 on mainnet and 18230 on testnet, and the
+# lightwalletd (CompactTxStreamer) port is 9067 and 19067, matching what mint dials.
 
 [network]
 network = "@ZEBRA_NETWORK@"
@@ -15,6 +16,7 @@ ephemeral = false
 [rpc]
 listen_addr = "@ZEBRA_RPC@"
 indexer_listen_addr = "@ZEBRA_INDEXER@"
+lightwalletd_listen_addr = "@ZEBRA_LIGHTWALLETD@"
 enable_cookie_auth = false
 parallel_cpu_threads = 0
 

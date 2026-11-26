@@ -277,12 +277,14 @@ case "$NETWORK" in
     zebra_p2p="[::]:18233"
     zebra_rpc="127.0.0.1:18232"
     zebra_indexer="127.0.0.1:18230"
+    zebra_lightwalletd="127.0.0.1:19067"
     ;;
   mainnet)
     zebra_network="Mainnet"
     zebra_p2p="[::]:8233"
     zebra_rpc="127.0.0.1:8232"
     zebra_indexer="127.0.0.1:8230"
+    zebra_lightwalletd="127.0.0.1:9067"
     ;;
   *)
     echo "network=${NETWORK} is not testnet or mainnet" >&2
@@ -293,18 +295,19 @@ esac
 mkdir -p "$BUILD"
 zebrad_config="$BUILD/zebrad.toml"
 python3 - "$ROOT/image/configs/zebrad.toml" "$zebrad_config" \
-  "$zebra_network" "$zebra_p2p" "$zebra_rpc" "$zebra_indexer" <<'PY'
+  "$zebra_network" "$zebra_p2p" "$zebra_rpc" "$zebra_indexer" "$zebra_lightwalletd" <<'PY'
 import sys
 import tomllib
 from pathlib import Path
 
-template, path, network, p2p, rpc, indexer = sys.argv[1:]
+template, path, network, p2p, rpc, indexer, lightwalletd = sys.argv[1:]
 text = Path(template).read_text()
 for key, value in (
     ("@ZEBRA_NETWORK@", network),
     ("@ZEBRA_P2P@", p2p),
     ("@ZEBRA_RPC@", rpc),
     ("@ZEBRA_INDEXER@", indexer),
+    ("@ZEBRA_LIGHTWALLETD@", lightwalletd),
 ):
     if text.count(key) != 1:
         raise SystemExit(f"image/configs/zebrad.toml must name {key} once")
@@ -318,6 +321,7 @@ checks = (
     ("network.listen_addr", net.get("listen_addr"), p2p),
     ("rpc.listen_addr", rpc_table.get("listen_addr"), rpc),
     ("rpc.indexer_listen_addr", rpc_table.get("indexer_listen_addr"), indexer),
+    ("rpc.lightwalletd_listen_addr", rpc_table.get("lightwalletd_listen_addr"), lightwalletd),
 )
 errors = [f"{name} is {got!r}, expected {want!r}" for name, got, want in checks if got != want]
 if errors:

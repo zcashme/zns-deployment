@@ -152,11 +152,16 @@ if [ ! -f "$ZEBRA_CONFIG" ]; then
 fi
 
 indexer_addr="127.0.0.1:8230"
+lightwalletd_addr="127.0.0.1:9067"
 if grep -q '^network = "Testnet"' "$ZEBRA_CONFIG"; then
   indexer_addr="127.0.0.1:18230"
+  lightwalletd_addr="127.0.0.1:19067"
 fi
 if ! grep -q "indexer_listen_addr = \"$indexer_addr\"" "$ZEBRA_CONFIG"; then
   fatal "Zebra gRPC listener $indexer_addr is not configured"
+fi
+if ! grep -q "lightwalletd_listen_addr = \"$lightwalletd_addr\"" "$ZEBRA_CONFIG"; then
+  fatal "Zebra CompactTxStreamer listener $lightwalletd_addr is not configured"
 fi
 
 # kill -0 reports a zombie as alive. State Z in /proc means the process has exited.
